@@ -2,7 +2,7 @@
 """
 Google Cloud Vision API PDF Extractor
 High-accuracy OCR using Google's Vision API (95-99% accuracy)
-Supports Urdu, Arabic, and all major languages
+Simple extraction - just OCR, no formatting
 """
 
 import sys
@@ -14,7 +14,6 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from typing import Dict, List
-import re
 
 class GoogleVisionPDFExtractor:
     def __init__(self, credentials_path: str = None):
@@ -41,39 +40,14 @@ class GoogleVisionPDFExtractor:
             print("   export GOOGLE_APPLICATION_CREDENTIALS='/path/to/key.json'")
             sys.exit(1)
 
-    def _detect_chapter(self, text: str) -> Dict:
-        """Detect if this page starts a chapter"""
-        lines = text.split('\n')[:10]
-
-        for line in lines:
-            line_stripped = line.strip()
-
-            patterns = [
-                r'^(?:Chapter|CHAPTER|باب)\s*(\d+|[IVX]+|One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten)',
-                r'^(?:Ch|CH)\.?\s*(\d+)',
-                r'^(\d+)\s*(?:\.|:)?\s*(?:Chapter|CHAPTER)',
-                r'^(?:Part|PART|حصہ)\s*(\d+|[IVX]+)',
-            ]
-
-            for pattern in patterns:
-                match = re.search(pattern, line_stripped, re.IGNORECASE)
-                if match:
-                    return {
-                        'text': line_stripped,
-                        'number': match.group(1) if match.groups() else '1',
-                        'type': 'chapter'
-                    }
-
-        return None
-
     def _process_single_page(self, pdf_path: Path, page_num: int, output_dir: Path,
-                            current_chapter: Dict, total_pages: int) -> Dict:
+                            total_pages: int) -> Dict:
         """Process a single page with Google Vision API"""
         try:
             # Convert page to image
             images = convert_from_path(
                 pdf_path,
-                dpi=300,  # Higher DPI for better Google Vision accuracy
+                dpi=300,  # Higher DPI for better accuracy
                 first_page=page_num,
                 last_page=page_num
             )
@@ -105,7 +79,7 @@ class GoogleVisionPDFExtractor:
             if response.error.message:
                 raise Exception(f"API Error: {response.error.message}")
 
-            # Extract full text
+            # Extract full text from Vision API
             text = response.full_text_annotation.text if response.full_text_annotation else ""
 
             # Calculate confidence (Google Vision provides per-word confidence)
@@ -119,12 +93,11 @@ class GoogleVisionPDFExtractor:
 
             avg_confidence = (sum(confidences) / len(confidences) * 100) if confidences else 0
 
-            # Detect chapter
-            chapter_info = self._detect_chapter(text)
-
-            # Write page immediately (streaming)
-            self._write_page_immediately(output_dir, page_num, text, avg_confidence,
-                                        chapter_info, current_chapter)
+            # Save page immediately
+            page_file = output_dir / 'raw_pages' / f"page_{page_num:03d}.txt"
+            page_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(page_file, 'w', encoding='utf-8') as f:
+                f.write(text)
 
             # Clean up
             del image
@@ -135,49 +108,22 @@ class GoogleVisionPDFExtractor:
                 'page': page_num,
                 'text': text,
                 'char_count': len(text),
-                'confidence': avg_confidence,
-                'chapter': chapter_info
+                'confidence': avg_confidence
             }
 
         except Exception as e:
             print(f"\n  ✗ Error processing page {page_num}: {e}")
             return None
 
-    def _write_page_immediately(self, output_dir: Path, page_num: int, text: str,
-                               confidence: float, chapter_info: Dict, current_chapter: Dict):
-        """Write page to disk immediately"""
-        # Determine chapter folder
-        if chapter_info:
-            chapter_name = chapter_info['text'][:50]
-            chapter_name = re.sub(r'[^\w\s-]', '', chapter_name)
-            chapter_name = re.sub(r'[-\s]+', '_', chapter_name).strip('_')
-            chapter_dir = output_dir / 'chapters' / f"chapter_{chapter_info['number']}_{chapter_name}"
-        elif current_chapter.get('dir'):
-            chapter_dir = current_chapter['dir']
-        else:
-            chapter_dir = output_dir / 'chapters' / 'intro'
-
-        chapter_dir.mkdir(parents=True, exist_ok=True)
-
-        # Write page file
-        page_file = chapter_dir / f"page_{page_num:03d}.txt"
-        with open(page_file, 'w', encoding='utf-8') as f:
-            f.write(f"Page {page_num} (Google Vision Confidence: {confidence:.1f}%)\n")
-            f.write("=" * 60 + "\n\n")
-            f.write(text)
-
-        return chapter_dir
-
     def extract_pdf(self, pdf_path: str, output_dir: str = "extracted_google",
                    max_workers: int = 4) -> Dict:
         """
-        Extract text from PDF using Google Vision API with parallel processing
+        Extract text from PDF using Google Vision API
 
         Args:
             pdf_path: Path to PDF file
             output_dir: Output directory
             max_workers: Number of parallel workers (default 4)
-                        Be careful: Google has rate limits!
         """
         pdf_path = Path(pdf_path)
         if not pdf_path.exists():
@@ -214,15 +160,13 @@ class GoogleVisionPDFExtractor:
         print(f"  Processing {total_pages} pages with {max_workers} parallel workers...")
         print(f"  ⚠️  Note: Google API has rate limits and costs")
 
-        pages_text = []
+        pages_data = []
         completed_count = 0
         lock = threading.Lock()
-        current_chapter = {'dir': pdf_output / 'chapters' / 'intro'}
 
         def process_page(page_num):
             nonlocal completed_count
-            result = self._process_single_page(pdf_path, page_num, pdf_output,
-                                              current_chapter, total_pages)
+            result = self._process_single_page(pdf_path, page_num, pdf_output, total_pages)
 
             with lock:
                 completed_count += 1
@@ -242,122 +186,74 @@ class GoogleVisionPDFExtractor:
                 try:
                     result = future.result()
                     if result:
-                        pages_text.append(result)
-
-                        # Update current chapter
-                        if result.get('chapter'):
-                            with lock:
-                                current_chapter['dir'] = pdf_output / 'chapters' / f"chapter_{result['chapter']['number']}"
+                        pages_data.append(result)
                 except Exception as e:
                     print(f"\n  ✗ Error on page {page_num}: {e}")
 
         # Sort by page number
-        pages_text.sort(key=lambda x: x['page'])
+        pages_data.sort(key=lambda x: x['page'])
 
         print(f"\n  ✓ Google Vision OCR completed for {total_pages} pages")
 
-        # Save results
-        self._save_results(pdf_path, pages_text, pdf_output)
+        # Save pages index JSON
+        pages_index = {
+            'source': str(pdf_path),
+            'extraction_method': 'Google Cloud Vision API',
+            'total_pages': len(pages_data),
+            'total_characters': sum(p['char_count'] for p in pages_data),
+            'avg_confidence': f"{sum(p['confidence'] for p in pages_data) / len(pages_data):.1f}%" if pages_data else "0%",
+            'pages': [
+                {
+                    'page': p['page'],
+                    'file': f"raw_pages/page_{p['page']:03d}.txt",
+                    'char_count': p['char_count'],
+                    'confidence': p['confidence']
+                }
+                for p in pages_data
+            ]
+        }
+
+        index_file = pdf_output / 'pages_index.json'
+        with open(index_file, 'w', encoding='utf-8') as f:
+            json.dump(pages_index, f, indent=2, ensure_ascii=False)
+
+        print(f"\n  ✓ OCR extraction complete!")
+        print(f"  📁 Output: {pdf_output}/")
+        print(f"  📄 Raw pages: raw_pages/ folder")
+        print(f"  📊 Pages index: pages_index.json")
+        print(f"\n  💡 Next step: Run book_formatter.py to clean and organize the text")
 
         return {
             'success': True,
             'method': 'google_vision_api',
-            'pages': pages_text,
-            'total_pages': len(pages_text),
-            'total_chars': sum(p['char_count'] for p in pages_text),
-            'avg_confidence': sum(p['confidence'] for p in pages_text) / len(pages_text) if pages_text else 0
+            'output_dir': str(pdf_output),
+            'total_pages': len(pages_data),
+            'avg_confidence': sum(p['confidence'] for p in pages_data) / len(pages_data) if pages_data else 0
         }
-
-    def _save_results(self, pdf_path: Path, pages_text: List[Dict], output_dir: Path):
-        """Save metadata and chapter index"""
-        pdf_name = pdf_path.stem
-
-        # Create chapter index
-        chapters = {}
-        for page in pages_text:
-            if page.get('chapter'):
-                chapter_num = page['chapter']['number']
-                if chapter_num not in chapters:
-                    chapters[chapter_num] = {
-                        'title': page['chapter']['text'],
-                        'start_page': page['page'],
-                        'pages': []
-                    }
-                chapters[chapter_num]['pages'].append(page['page'])
-
-        # Write chapter index
-        if chapters:
-            index_file = output_dir / 'CHAPTER_INDEX.txt'
-            with open(index_file, 'w', encoding='utf-8') as f:
-                f.write(f"CHAPTER INDEX - {pdf_name}\n")
-                f.write("=" * 60 + "\n\n")
-                for chapter_num in sorted(chapters.keys(), key=lambda x: int(x) if x.isdigit() else 0):
-                    ch = chapters[chapter_num]
-                    f.write(f"Chapter {chapter_num}: {ch['title']}\n")
-                    f.write(f"  Pages: {ch['start_page']}-{max(ch['pages'])}\n")
-                    f.write(f"  Total pages: {len(ch['pages'])}\n\n")
-
-        # Save complete text
-        complete_file = output_dir / f"{pdf_name}_complete.txt"
-        with open(complete_file, 'w', encoding='utf-8') as f:
-            for page in pages_text:
-                f.write(f"\n{'='*60}\n")
-                f.write(f"PAGE {page['page']} (Confidence: {page['confidence']:.1f}%)\n")
-                f.write(f"{'='*60}\n\n")
-                f.write(page['text'])
-                f.write('\n')
-
-        # Save metadata
-        metadata = {
-            'source': str(pdf_path),
-            'extraction_method': 'Google Cloud Vision API',
-            'total_pages': len(pages_text),
-            'total_characters': sum(p['char_count'] for p in pages_text),
-            'avg_confidence': f"{sum(p['confidence'] for p in pages_text) / len(pages_text):.1f}%" if pages_text else "0%",
-            'chapters': len(chapters) if chapters else 0
-        }
-
-        if chapters:
-            metadata['chapters_list'] = {
-                num: {'title': ch['title'], 'pages': len(ch['pages'])}
-                for num, ch in chapters.items()
-            }
-
-        metadata_file = output_dir / f"{pdf_name}_metadata.json"
-        with open(metadata_file, 'w', encoding='utf-8') as f:
-            json.dump(metadata, f, indent=2, ensure_ascii=False)
-
-        print(f"\n  ✓ Processing complete!")
-        print(f"  📁 Output: {output_dir}/")
-        if chapters:
-            print(f"  📖 Chapters detected: {len(chapters)}")
-            print(f"  📄 Chapter index: CHAPTER_INDEX.txt")
-        print(f"  📊 Metadata: {metadata_file.name}")
-        print(f"  📝 Complete text: {complete_file.name}")
 
 
 def main():
     """Main function with CLI"""
     if len(sys.argv) < 2:
-        print("Google Cloud Vision PDF Extractor")
+        print("Google Cloud Vision API PDF Extractor")
         print("=" * 60)
-        print("\nHigh-accuracy OCR using Google Vision API (95-99% accuracy)")
+        print("\nHigh-accuracy OCR extraction (no formatting)")
+        print("  - Vision API: 95-99% OCR accuracy")
+        print("  - Extracts raw text from all pages")
+        print("  - Use book_formatter.py afterwards for cleaning & organizing")
         print("\nSetup:")
         print("1. Install: pip install google-cloud-vision pdf2image")
-        print("2. Get credentials from Google Cloud Console")
+        print("2. Get Vision API credentials from Google Cloud Console")
         print("3. Set environment variable:")
-        print("   export GOOGLE_APPLICATION_CREDENTIALS='/path/to/key.json'")
+        print("   export GOOGLE_APPLICATION_CREDENTIALS='/path/to/vision-key.json'")
         print("\nUsage:")
         print("  python google_vision_extractor.py <pdf_file>")
         print("  python google_vision_extractor.py <pdf_file> --workers 2")
-        print("  python google_vision_extractor.py <pdf_file> --credentials /path/to/key.json")
         print("\nExamples:")
         print("  python google_vision_extractor.py book.pdf")
         print("  python google_vision_extractor.py urdu_book.pdf --workers 2")
-        print("\nNote:")
-        print("  - Google Vision API has rate limits")
-        print("  - Costs ~$1.50 per 1000 pages")
-        print("  - First 1000 pages/month are free")
+        print("\nCosts:")
+        print("  - Vision API: $1.50 per 1000 pages (first 1000/month free)")
         sys.exit(0)
 
     pdf_file = sys.argv[1]

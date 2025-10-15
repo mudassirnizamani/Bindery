@@ -15,55 +15,50 @@ import json
 import csv
 import re
 from typing import Optional, List, Dict, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 class ManjaroPDFExtractor:
-    def __init__(self, lang='eng'):
+    def __init__(self):
         """
-        Initialize PDF extractor for Manjaro
-        
-        Args:
-            lang: Language code(s) for OCR
-                  'eng' - English
-                  'urd' - Urdu
-                  'ara' - Arabic
-                  'hin' - Hindi
-                  'eng+urd' - Multiple languages
+        Initialize PDF extractor for English documents
+        Optimized for English-only text extraction
         """
-        self.lang = lang
+        self.lang = 'eng'  # English only
         self.check_dependencies()
         
     def check_dependencies(self):
         """Check if all required tools are installed on Manjaro"""
         missing = []
-        
+
         # Check Tesseract
         try:
             subprocess.run(['tesseract', '--version'], capture_output=True, check=True)
-            print("✓ Tesseract installed")
+            print("✓ Tesseract installed (English)")
         except (subprocess.CalledProcessError, FileNotFoundError):
             missing.append("tesseract")
-            
-        # Check for language data
+
+        # Check for English language data
         try:
             result = subprocess.run(['tesseract', '--list-langs'], capture_output=True, text=True)
             available_langs = result.stdout.lower()
-            
-            for lang in self.lang.split('+'):
-                if lang not in available_langs:
-                    print(f"⚠ Language '{lang}' not installed")
-                    print(f"  Install with: sudo pacman -S tesseract-data-{lang}")
-                else:
-                    print(f"✓ Language '{lang}' available")
+
+            if 'eng' in available_langs:
+                print("✓ English language data available")
+            else:
+                print("⚠ English language data not found")
+                print("  Install with: sudo pacman -S tesseract-data-eng")
+                missing.append("tesseract-data-eng")
         except:
             pass
-            
+
         # Check pdftoppm (from poppler)
         try:
             subprocess.run(['pdftoppm', '-h'], capture_output=True, check=True)
             print("✓ Poppler installed")
         except (subprocess.CalledProcessError, FileNotFoundError):
             missing.append("poppler")
-            
+
         if missing:
             print("\n⚠ Missing dependencies:")
             for dep in missing:
@@ -107,10 +102,15 @@ class ManjaroPDFExtractor:
         if not pdf_path.exists():
             raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-        output_dir = Path(output_dir)
-        output_dir.mkdir(exist_ok=True)
+        # Create output directory with exact PDF name
+        output_base = Path(output_dir)
+        output_base.mkdir(exist_ok=True)
+
+        pdf_output = output_base / pdf_path.stem
+        pdf_output.mkdir(exist_ok=True)
 
         print(f"\n📄 Processing: {pdf_path.name}")
+        print(f"📁 Output folder: {pdf_output}/")
 
         # First try text extraction if not forcing OCR
         if not force_ocr:
@@ -124,31 +124,61 @@ class ManjaroPDFExtractor:
                 if is_garbled:
                     print("  ⚠ Detected garbled text (likely non-English embedded font)")
                     print("  → Switching to OCR mode...")
-                    result = self._ocr_extraction(pdf_path)
+                    result = self._ocr_extraction(pdf_path, pdf_output)
                 elif result['total_chars'] < 100:
                     print("  → Low text content, using OCR...")
-                    result = self._ocr_extraction(pdf_path)
+                    result = self._ocr_extraction(pdf_path, pdf_output)
                 else:
                     print("  → Text layer found, extracting...")
             else:
                 print("  → Using OCR (this may take a moment)...")
-                result = self._ocr_extraction(pdf_path)
+                result = self._ocr_extraction(pdf_path, pdf_output)
         else:
             print("  → Force OCR mode enabled...")
-            result = self._ocr_extraction(pdf_path)
+            result = self._ocr_extraction(pdf_path, pdf_output)
 
         # Save results
-        self._save_results(pdf_path, result, output_dir)
+        self._save_results(pdf_path, result, pdf_output)
 
         return result
     
+    def _detect_chapter(self, text: str) -> Optional[Dict]:
+        """Detect if this page starts a chapter (English only)"""
+        lines = text.split('\n')[:10]  # Check first 10 lines
+
+        for line in lines:
+            line_stripped = line.strip()
+
+            # Patterns for English chapter detection
+            patterns = [
+                r'^(?:Chapter|CHAPTER)\s*(\d+|[IVX]+|One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten)',
+                r'^(?:Ch|CH)\.?\s*(\d+)',
+                r'^(\d+)\s*(?:\.|:)?\s*(?:Chapter|CHAPTER)',
+                r'^(?:Part|PART)\s*(\d+|[IVX]+)',
+            ]
+
+            for pattern in patterns:
+                match = re.search(pattern, line_stripped, re.IGNORECASE)
+                if match:
+                    return {
+                        'text': line_stripped,
+                        'number': match.group(1) if match.groups() else '1',
+                        'type': 'chapter'
+                    }
+
+        return None
+
     def _detect_structure(self, text: str) -> Dict:
         """Detect document structure like headings, sections, lists"""
         structure = {
             'headings': [],
             'lists': [],
-            'paragraphs': []
+            'paragraphs': [],
+            'chapter': None
         }
+
+        # Check for chapter
+        structure['chapter'] = self._detect_chapter(text)
 
         lines = text.split('\n')
         current_section = None
@@ -259,55 +289,127 @@ class ManjaroPDFExtractor:
                 pass
         return 0
 
-    def _ocr_extraction(self, pdf_path: Path) -> Dict:
-        """Extract text using OCR with memory-efficient page-by-page processing"""
-        pages_text = []
-
+    def _process_single_page_ocr(self, pdf_path: Path, page_num: int, output_dir: Path, current_chapter: Dict) -> Dict:
+        """Process a single page with OCR and write immediately to disk"""
         try:
-            # Get total page count
+            # Convert only ONE page
+            images = convert_from_path(
+                pdf_path,
+                dpi=150,
+                first_page=page_num,
+                last_page=page_num,
+                grayscale=True
+            )
+
+            if not images:
+                return None
+
+            image = images[0]
+
+            # Perform OCR
+            text = pytesseract.image_to_string(image, lang=self.lang)
+
+            # Get OCR confidence
+            data = pytesseract.image_to_data(image, lang=self.lang, output_type=pytesseract.Output.DICT)
+            confidences = [int(c) for c in data['conf'] if int(c) > 0]
+            avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+
+            # Detect structure
+            structure = self._detect_structure(text)
+
+            # Write page immediately to disk (streaming)
+            self._write_page_immediately(output_dir, page_num, text, avg_confidence, structure, current_chapter)
+
+            result = {
+                'page': page_num,
+                'text': text,
+                'char_count': len(text),
+                'confidence': avg_confidence,
+                'structure': structure
+            }
+
+            # Free memory immediately
+            del image
+            del images
+            del data
+
+            return result
+
+        except Exception as e:
+            print(f"\n  Error processing page {page_num}: {e}")
+            return None
+
+    def _write_page_immediately(self, output_dir: Path, page_num: int, text: str, confidence: float, structure: Dict, current_chapter: Dict):
+        """Write page to disk immediately (streaming write)"""
+        # Determine which chapter folder to use
+        if structure.get('chapter'):
+            chapter_name = structure['chapter']['text'][:50]
+            chapter_name = re.sub(r'[^\w\s-]', '', chapter_name)
+            chapter_name = re.sub(r'[-\s]+', '_', chapter_name).strip('_')
+            chapter_dir = output_dir / 'chapters' / f"chapter_{structure['chapter']['number']}_{chapter_name}"
+        elif current_chapter:
+            chapter_dir = current_chapter['dir']
+        else:
+            chapter_dir = output_dir / 'chapters' / 'intro'
+
+        chapter_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write page file
+        page_file = chapter_dir / f"page_{page_num:03d}.txt"
+        with open(page_file, 'w', encoding='utf-8') as f:
+            f.write(f"Page {page_num} (OCR Confidence: {confidence:.1f}%)\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(text)
+
+        return chapter_dir
+
+    def _ocr_extraction(self, pdf_path: Path, output_dir: Path) -> Dict:
+        """Extract text using OCR with parallel processing and streaming writes"""
+        try:
             total_pages = self._get_page_count(pdf_path)
             if total_pages == 0:
                 raise Exception("Could not determine page count")
 
-            print(f"  Processing {total_pages} pages with OCR...")
+            print(f"  Processing {total_pages} pages with OCR (4 parallel threads)...")
 
-            # Process one page at a time to minimize memory usage
-            for page_num in range(1, total_pages + 1):
-                print(f"  OCR page {page_num}/{total_pages}", end='\r')
+            pages_text = []
+            completed_count = 0
+            lock = threading.Lock()
+            current_chapter = {'dir': output_dir / 'chapters' / 'intro'}
 
-                # Convert only ONE page at a time - this is critical for memory
-                images = convert_from_path(
-                    pdf_path,
-                    dpi=150,  # Reduced from 200 to save memory (still good quality)
-                    first_page=page_num,
-                    last_page=page_num,
-                    grayscale=True  # Grayscale uses less memory than color
-                )
+            def process_page(page_num):
+                nonlocal completed_count
+                result = self._process_single_page_ocr(pdf_path, page_num, output_dir, current_chapter)
 
-                if not images:
-                    continue
+                with lock:
+                    completed_count += 1
+                    print(f"  ✓ Completed {completed_count}/{total_pages} pages", end='\r')
 
-                image = images[0]
+                return result
 
-                # Perform OCR
-                text = pytesseract.image_to_string(image, lang=self.lang)
+            # Use ThreadPoolExecutor for parallel processing (4 threads)
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                # Submit all pages
+                future_to_page = {executor.submit(process_page, page_num): page_num
+                                for page_num in range(1, total_pages + 1)}
 
-                # Get OCR confidence data
-                data = pytesseract.image_to_data(image, lang=self.lang, output_type=pytesseract.Output.DICT)
-                confidences = [int(c) for c in data['conf'] if int(c) > 0]
-                avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+                # Collect results as they complete
+                for future in as_completed(future_to_page):
+                    page_num = future_to_page[future]
+                    try:
+                        result = future.result()
+                        if result:
+                            pages_text.append(result)
 
-                pages_text.append({
-                    'page': page_num,
-                    'text': text,
-                    'char_count': len(text),
-                    'confidence': avg_confidence
-                })
+                            # Update current chapter if new chapter detected
+                            if result.get('structure', {}).get('chapter'):
+                                with lock:
+                                    current_chapter['dir'] = output_dir / 'chapters' / f"chapter_{result['structure']['chapter']['number']}"
+                    except Exception as e:
+                        print(f"\n  Error on page {page_num}: {e}")
 
-                # Explicitly delete image to free memory immediately
-                del image
-                del images
-                del data
+            # Sort pages by page number
+            pages_text.sort(key=lambda x: x['page'])
 
             print(f"\n  ✓ OCR completed for {total_pages} pages")
 
@@ -326,172 +428,78 @@ class ManjaroPDFExtractor:
             return {'success': False, 'error': str(e)}
     
     def _save_results(self, pdf_path: Path, result: Dict, output_dir: Path):
-        """Save extraction results to files"""
+        """Save extraction results and metadata"""
         if not result.get('success'):
             print("  ✗ Extraction failed")
             return
 
         pdf_name = pdf_path.stem
-        pdf_output = output_dir / pdf_name
-        pdf_output.mkdir(exist_ok=True)
 
-        # Save complete text
-        text_file = pdf_output / f"{pdf_name}_complete.txt"
-        with open(text_file, 'w', encoding='utf-8') as f:
-            for page in result['pages']:
-                f.write(f"\n{'='*60}\n")
-                f.write(f"PAGE {page['page']}")
-                if 'confidence' in page:
-                    f.write(f" (OCR Confidence: {page['confidence']:.1f}%)")
-                f.write(f"\n{'='*60}\n\n")
-                f.write(page['text'])
-                f.write('\n')
+        # Create chapter index
+        chapters = {}
+        for page in result.get('pages', []):
+            chapter_info = page.get('structure', {}).get('chapter')
+            if chapter_info:
+                chapter_num = chapter_info['number']
+                if chapter_num not in chapters:
+                    chapters[chapter_num] = {
+                        'title': chapter_info['text'],
+                        'start_page': page['page'],
+                        'pages': []
+                    }
+                chapters[chapter_num]['pages'].append(page['page'])
 
-        # Save individual pages
-        pages_dir = pdf_output / 'pages'
-        pages_dir.mkdir(exist_ok=True)
-
-        for page in result['pages']:
-            page_file = pages_dir / f"page_{page['page']:03d}.txt"
-            with open(page_file, 'w', encoding='utf-8') as f:
-                f.write(page['text'])
-
-        # Save document structure outline
-        structure_dir = pdf_output / 'structure'
-        structure_dir.mkdir(exist_ok=True)
-
-        # Save structured outline
-        outline_file = structure_dir / 'outline.txt'
-        with open(outline_file, 'w', encoding='utf-8') as f:
-            f.write("DOCUMENT OUTLINE\n")
-            f.write("=" * 60 + "\n\n")
-
-            for page in result['pages']:
-                if 'structure' not in page:
-                    continue
-
-                structure = page['structure']
-                if structure['headings']:
-                    f.write(f"\nPage {page['page']}:\n")
-                    f.write("-" * 40 + "\n")
-                    for heading in structure['headings']:
-                        indent = "  " * heading.get('level', 0)
-                        f.write(f"{indent}{heading['text']}\n")
-
-        # Save sections by headings
-        sections_dir = structure_dir / 'sections'
-        sections_dir.mkdir(exist_ok=True)
-
-        section_num = 1
-        for page in result['pages']:
-            if 'structure' not in page:
-                continue
-
-            structure = page['structure']
-            for heading in structure['headings']:
-                # Create a safe filename from heading text
-                safe_name = re.sub(r'[^\w\s-]', '', heading['text'][:50])
-                safe_name = re.sub(r'[-\s]+', '_', safe_name).strip('_')
-                section_file = sections_dir / f"{section_num:02d}_{safe_name}.txt"
-
-                with open(section_file, 'w', encoding='utf-8') as f:
-                    f.write(f"Page {page['page']}\n")
-                    f.write(f"{heading['text']}\n")
-                    f.write("=" * 60 + "\n\n")
-                    # Write the text content
-                    f.write(page['text'])
-
-                section_num += 1
-
-        # Save lists separately
-        lists_file = structure_dir / 'lists.txt'
-        with open(lists_file, 'w', encoding='utf-8') as f:
-            f.write("EXTRACTED LISTS\n")
-            f.write("=" * 60 + "\n\n")
-
-            for page in result['pages']:
-                if 'structure' not in page:
-                    continue
-
-                structure = page['structure']
-                if structure['lists']:
-                    f.write(f"\nPage {page['page']}:\n")
-                    f.write("-" * 40 + "\n")
-                    for item in structure['lists']:
-                        f.write(f"{item['text']}\n")
-                    f.write("\n")
-
-        # Save tables with CSV export
-        if result.get('tables'):
-            tables_dir = pdf_output / 'tables'
-            tables_dir.mkdir(exist_ok=True)
-
-            tables_file = tables_dir / 'tables.txt'
-            with open(tables_file, 'w', encoding='utf-8') as f:
-                for table_info in result['tables']:
-                    f.write(f"\n=== Tables from Page {table_info['page']} ===\n")
-                    for idx, table in enumerate(table_info['tables'], 1):
-                        f.write(f"\nTable {idx}:\n")
-                        for row in table:
-                            f.write(' | '.join(str(cell or '') for cell in row))
-                            f.write('\n')
-                        f.write('\n')
-
-                        # Also save each table as CSV
-                        csv_file = tables_dir / f"page_{table_info['page']}_table_{idx}.csv"
-                        with open(csv_file, 'w', encoding='utf-8', newline='') as csvf:
-                            writer = csv.writer(csvf)
-                            for row in table:
-                                writer.writerow([cell or '' for cell in row])
+        # Write chapter index
+        if chapters:
+            index_file = output_dir / 'CHAPTER_INDEX.txt'
+            with open(index_file, 'w', encoding='utf-8') as f:
+                f.write(f"CHAPTER INDEX - {pdf_name}\n")
+                f.write("=" * 60 + "\n\n")
+                for chapter_num in sorted(chapters.keys(), key=lambda x: int(x) if x.isdigit() else 0):
+                    ch = chapters[chapter_num]
+                    f.write(f"Chapter {chapter_num}: {ch['title']}\n")
+                    f.write(f"  Pages: {ch['start_page']}-{max(ch['pages'])}\n")
+                    f.write(f"  Total pages: {len(ch['pages'])}\n\n")
 
         # Save metadata
         metadata = {
             'source': str(pdf_path),
             'extraction_method': result['method'],
-            'language': self.lang,
+            'language': 'English',
             'total_pages': result['page_count'],
             'total_characters': result['total_chars'],
-            'avg_chars_per_page': result['total_chars'] // result['page_count'] if result['page_count'] > 0 else 0
+            'avg_chars_per_page': result['total_chars'] // result['page_count'] if result['page_count'] > 0 else 0,
+            'chapters': len(chapters) if chapters else 0
         }
 
         if 'avg_confidence' in result:
             metadata['ocr_confidence'] = f"{result['avg_confidence']:.1f}%"
 
-        # Add structure statistics
-        total_headings = sum(len(p.get('structure', {}).get('headings', [])) for p in result['pages'])
-        total_lists = sum(len(p.get('structure', {}).get('lists', [])) for p in result['pages'])
+        if chapters:
+            metadata['chapters_list'] = {
+                num: {'title': ch['title'], 'pages': len(ch['pages'])}
+                for num, ch in chapters.items()
+            }
 
-        metadata['structure'] = {
-            'total_headings': total_headings,
-            'total_list_items': total_lists,
-            'total_tables': len(result.get('tables', []))
-        }
-
-        metadata_file = pdf_output / f"{pdf_name}_metadata.json"
+        metadata_file = output_dir / f"{pdf_name}_metadata.json"
         with open(metadata_file, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
 
-        print(f"  ✓ Saved to: {pdf_output}/")
-        print(f"    - Complete text: {text_file.name}")
-        print(f"    - Individual pages: {pages_dir.name}/")
-        print(f"    - Document structure: {structure_dir.name}/")
-        print(f"      • Outline: outline.txt")
-        print(f"      • Sections: {section_num-1} files")
-        print(f"      • Lists: lists.txt")
-        print(f"    - Metadata: {metadata_file.name}")
+        print(f"\n  ✓ Processing complete!")
+        print(f"  📁 Output: {output_dir}/")
+        if chapters:
+            print(f"  📖 Chapters detected: {len(chapters)}")
+            print(f"  📄 Chapter index: CHAPTER_INDEX.txt")
+        print(f"  📊 Metadata: {metadata_file.name}")
 
-        if result.get('tables'):
-            table_count = sum(len(t['tables']) for t in result['tables'])
-            print(f"    - Tables: {tables_dir.name}/ ({table_count} tables, CSV + TXT)")
-
-def batch_process(folder: str, lang: str = 'eng', output_dir: str = 'extracted'):
+def batch_process(folder: str, output_dir: str = 'extracted'):
     """Process all PDFs in a folder"""
-    extractor = ManjaroPDFExtractor(lang=lang)
+    extractor = ManjaroPDFExtractor()
     folder_path = Path(folder)
-    
+
     pdf_files = list(folder_path.glob('*.pdf'))
     print(f"\n📁 Found {len(pdf_files)} PDF files in {folder}")
-    
+
     results = []
     for pdf in pdf_files:
         try:
@@ -500,45 +508,39 @@ def batch_process(folder: str, lang: str = 'eng', output_dir: str = 'extracted')
         except Exception as e:
             print(f"  ✗ Failed: {e}")
             results.append({'file': pdf.name, 'status': 'failed', 'error': str(e)})
-    
+
     # Summary
     success = sum(1 for r in results if r['status'] == 'success')
     print(f"\n📊 Summary: {success}/{len(results)} files processed successfully")
-    
+
     return results
 
 def main():
     """Main function with command line interface"""
     if len(sys.argv) < 2:
-        print("PDF Text Extractor for Manjaro/Arch Linux")
+        print("PDF Text Extractor for English Documents")
         print("==========================================")
+        print("\nOptimized for English-only PDFs with parallel processing")
         print("\nUsage:")
-        print("  python main.py <pdf_file>                      # Extract from single PDF")
-        print("  python main.py <pdf_file> --lang urd           # Extract Urdu text")
-        print("  python main.py <pdf_file> --lang eng+urd       # Extract mixed English/Urdu")
-        print("  python main.py <pdf_file> --force-ocr          # Force OCR (ignore text layer)")
-        print("  python main.py --batch <folder>                # Process entire folder")
+        print("  python main.py <pdf_file>           # Extract from single PDF")
+        print("  python main.py <pdf_file> --force-ocr  # Force OCR (ignore text layer)")
+        print("  python main.py --batch <folder>     # Process entire folder")
         print("\nExamples:")
         print("  python main.py document.pdf")
-        print("  python main.py urdu_doc.pdf --lang urd")
-        print("  python main.py urdu_doc.pdf --lang urd --force-ocr")
-        print("  python main.py --batch ./pdfs --lang eng+urd")
-        print("\nSupported languages:")
-        print("  eng (English), urd (Urdu), ara (Arabic), hin (Hindi)")
-        print("\nTo install language packs:")
-        print("  sudo pacman -S tesseract-data-urd  # For Urdu")
-        print("  sudo pacman -S tesseract-data-ara  # For Arabic")
-        print("\nNote: Program auto-detects garbled text and switches to OCR")
+        print("  python main.py scanned_doc.pdf --force-ocr")
+        print("  python main.py --batch ./pdfs")
+        print("\nFeatures:")
+        print("  ✓ Parallel processing (4 threads)")
+        print("  ✓ Streaming writes (low memory usage)")
+        print("  ✓ Auto chapter detection")
+        print("  ✓ Auto-detects garbled text and switches to OCR")
+        print("\nSetup:")
+        print("  sudo pacman -S tesseract tesseract-data-eng poppler")
+        print("  pip install -r requirements.txt")
         sys.exit(0)
 
     # Parse arguments
-    lang = 'eng'
     force_ocr = False
-
-    if '--lang' in sys.argv:
-        idx = sys.argv.index('--lang')
-        if idx + 1 < len(sys.argv):
-            lang = sys.argv[idx + 1]
 
     if '--force-ocr' in sys.argv:
         force_ocr = True
@@ -547,10 +549,10 @@ def main():
         idx = sys.argv.index('--batch')
         if idx + 1 < len(sys.argv):
             folder = sys.argv[idx + 1]
-            batch_process(folder, lang=lang)
+            batch_process(folder)
     else:
         pdf_file = sys.argv[1]
-        extractor = ManjaroPDFExtractor(lang=lang)
+        extractor = ManjaroPDFExtractor()
         extractor.extract_from_pdf(pdf_file, force_ocr=force_ocr)
 
 if __name__ == "__main__":
