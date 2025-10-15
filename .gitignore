@@ -1,0 +1,36 @@
+# Environment variables
+.env
+
+# Google API credentials
+*.json
+!.vscode/*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Extracted content
+extracted/
+extracted_google/
+
+# Temporary files
+*.tmp
+*.log
