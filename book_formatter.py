@@ -980,6 +980,9 @@ RESPOND IN JSON:
             print(f"\n📂 Structure-based processing mode")
         else:
             print(f"\n📄 Dynamic chapter detection mode")
+            # Create chapters directory even without structure
+            chapters_dir = raw_pages_dir / 'chapters'
+            chapters_dir.mkdir(exist_ok=True)
 
         print(f"\n🔍 STEP 2: Processing {total_pages} pages with dynamic batching (initial size: {self.batch_size})")
 
