@@ -24,7 +24,7 @@ class BookFormatter:
         Initialize Book Formatter with Gemini AI
 
         Args:
-            gemini_api_key: Google AI API key for Gemini 2.0 Flash
+            gemini_api_key: Google AI API key for Gemini Flash Lite
                            If None, uses GOOGLE_API_KEY env var
             batch_size: Number of pages to process at once (default: 5)
         """
@@ -36,10 +36,10 @@ class BookFormatter:
                 sys.exit(1)
 
             genai.configure(api_key=api_key)
-            self.gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+            self.gemini_model = genai.GenerativeModel('gemini-flash-lite-latest')
             self.initial_batch_size = batch_size
             self.batch_size = batch_size
-            print(f"✓ Gemini 2.0 Flash initialized (batch size: {batch_size} pages)")
+            print(f"✓ Gemini Flash Lite initialized (batch size: {batch_size} pages)")
         except Exception as e:
             print(f"✗ Failed to initialize Gemini: {e}")
             sys.exit(1)
@@ -286,9 +286,17 @@ IMPORTANT:
                 print("  ⚠ No clear structure detected in first pages")
                 return None
 
+            # Fix and validate chapter numbers
+            chapters = structure.get('chapters', [])
+            for i, chapter in enumerate(chapters):
+                if chapter.get('number') is None:
+                    # Assign sequential number if missing
+                    chapter['number'] = i + 1
+                    print(f"  🔧 Fixed missing chapter number: {chapter.get('title', 'Unknown')} -> {i + 1}")
+
             print(f"  ✓ Structure detected:")
             print(f"    Parts: {len(structure.get('parts', []))}")
-            print(f"    Chapters: {len(structure.get('chapters', []))}")
+            print(f"    Chapters: {len(chapters)}")
 
             return structure
 
@@ -334,33 +342,55 @@ IMPORTANT:
         if not self.book_structure:
             return None
 
+        chapters = self.book_structure.get('chapters', [])
+        if not chapters:
+            print(f"  ⚠️ No chapters found in book structure")
+            return None
+
+        # Debug: Print first few chapters for debugging
+        if page_num <= 10:  # Only debug for first 10 pages to avoid spam
+            print(f"  🔍 Debug: Page {page_num}, checking {len(chapters)} chapters")
+            for i, ch in enumerate(chapters[:3]):  # Show first 3 chapters
+                print(f"    Chapter {i+1}: {ch.get('number', 'NO_NUMBER')} - {ch.get('title', 'NO_TITLE')} (start: {ch.get('start_page', 'NO_START')})")
+
         # Find chapter by page number
-        for chapter in self.book_structure.get('chapters', []):
+        for chapter in chapters:
             chapter_start = chapter.get('start_page')
+            chapter_number = chapter.get('number')
+
+            # Check if chapter_number is None or invalid
+            if chapter_number is None:
+                print(f"  ⚠️ Chapter has no number: {chapter.get('title', 'Unknown')}")
+                continue
 
             # Check if this page could be the start of this chapter
             if chapter_start and abs(page_num - chapter_start) <= 2:
                 # This might be the chapter start, verify with content
                 return {
                     'part_num': chapter.get('part_number'),
-                    'chapter_num': chapter['number'],
+                    'chapter_num': chapter_number,
                     'chapter_title': chapter['title'],
                     'is_start': True
                 }
 
         # If not a start page, find which chapter range we're in
-        for i, chapter in enumerate(self.book_structure.get('chapters', [])):
+        for i, chapter in enumerate(chapters):
             next_chapter_start = None
-            if i + 1 < len(self.book_structure['chapters']):
-                next_chapter_start = self.book_structure['chapters'][i + 1].get('start_page')
+            if i + 1 < len(chapters):
+                next_chapter_start = chapters[i + 1].get('start_page')
 
             chapter_start = chapter.get('start_page', 0)
+            chapter_number = chapter.get('number')
+
+            # Skip chapters with no number
+            if chapter_number is None:
+                continue
 
             if next_chapter_start:
                 if chapter_start <= page_num < next_chapter_start:
                     return {
                         'part_num': chapter.get('part_number'),
-                        'chapter_num': chapter['number'],
+                        'chapter_num': chapter_number,
                         'chapter_title': chapter['title'],
                         'is_start': False
                     }
@@ -369,12 +399,19 @@ IMPORTANT:
                 if page_num >= chapter_start:
                     return {
                         'part_num': chapter.get('part_number'),
-                        'chapter_num': chapter['number'],
+                        'chapter_num': chapter_number,
                         'chapter_title': chapter['title'],
                         'is_start': False
                     }
 
-        return None
+        # If no chapter found, return a fallback
+        print(f"  ⚠️ No chapter found for page {page_num}, using fallback")
+        return {
+            'part_num': None,
+            'chapter_num': 1,  # Fallback chapter number
+            'chapter_title': 'Unknown Chapter',
+            'is_start': False
+        }
 
     def _get_or_create_chapter_file(self, output_dir: Path, part_num: int,
                                     chapter_num: int, chapter_title: str) -> object:
@@ -390,7 +427,16 @@ IMPORTANT:
         Returns:
             Open file handle
         """
-        chapter_id = f"part{part_num}_ch{chapter_num}" if part_num else f"ch{chapter_num}"
+        # Handle None chapter_num - use a fallback numbering
+        if chapter_num is None:
+            chapter_num = 1  # Default fallback
+            print(f"  ⚠️ Warning: chapter_num is None, using fallback number 1")
+        
+        # Handle None part_num
+        if part_num is None:
+            part_num = 0  # Use 0 for no part
+        
+        chapter_id = f"part{part_num}_ch{chapter_num}" if part_num > 0 else f"ch{chapter_num}"
 
         # Return existing handle if already open
         if chapter_id in self.chapter_files:
@@ -399,7 +445,7 @@ IMPORTANT:
         # Create new file
         chapters_dir = output_dir / 'chapters'
 
-        if part_num and self.book_structure.get('has_parts'):
+        if part_num and part_num > 0 and self.book_structure and self.book_structure.get('has_parts'):
             # Find part title
             part_title = "Unknown_Part"
             for part in self.book_structure.get('parts', []):
@@ -547,12 +593,12 @@ IMPORTANT:
             time.sleep(10)  # Rate limit delay
 
             # Configure generation settings for more reliable JSON
-            # Gemini 2.5 Flash supports up to 8192 output tokens
+            # Gemini Flash Lite supports up to 8192 output tokens
             generation_config = {
                 'temperature': 0.1,
                 'top_p': 0.95,
                 'top_k': 40,
-                'max_output_tokens': 8192,  # Maximum for Gemini 2.5 Flash
+                'max_output_tokens': 8192,  # Maximum for Gemini Flash Lite
             }
 
             # Safety settings - Allow all content types for book processing
@@ -1215,7 +1261,7 @@ RESPOND IN JSON:
         metadata = {
             'source': original_index.get('source'),
             'book_name': book_name,
-            'extraction_method': 'Google Cloud Vision API + Gemini 2.5 Flash Real-time Formatting',
+            'extraction_method': 'Google Cloud Vision API + Gemini Flash Lite Real-time Formatting',
             'total_pages': original_index['total_pages'],
             'original_avg_confidence': original_index.get('avg_confidence'),
             'total_chapters': len(chapters_metadata),
@@ -1296,7 +1342,7 @@ RESPOND IN JSON:
         # Save metadata
         metadata = {
             'source': original_index.get('source'),
-            'extraction_method': 'Google Cloud Vision API + Gemini 2.0 Flash Batch Formatting',
+            'extraction_method': 'Google Cloud Vision API + Gemini Flash Lite Batch Formatting',
             'total_pages': len(all_pages),
             'total_characters': sum(len(p['text']) for p in all_pages),
             'original_avg_confidence': original_index.get('avg_confidence'),
@@ -1352,7 +1398,7 @@ RESPOND IN JSON:
 def main():
     """Main function with CLI"""
     if len(sys.argv) < 2:
-        print("Book Formatter with Gemini AI (Structure-Aware Real-Time Processing)")
+        print("Book Formatter with Gemini Flash Lite (Structure-Aware Real-Time Processing)")
         print("=" * 60)
         print("\nCleans and organizes raw OCR text into structured book format")
         print("  - Extracts book structure from table of contents")
@@ -1371,7 +1417,7 @@ def main():
         print("\nDynamic Batch Sizing:")
         print("  - Default: 5 pages per batch (safe for most books)")
         print("  - Automatically reduces if pages are too dense")
-        print("  - Target: ~7,000 tokens per batch (Gemini limit: 8,192)")
+        print("  - Target: ~7,000 tokens per batch (Gemini Flash Lite limit: 8,192)")
         print("  - Minimum: 3 pages per batch")
         print("  - You can increase with --batch-size for lighter content")
         print("\nExamples:")
