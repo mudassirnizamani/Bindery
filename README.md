@@ -55,6 +55,30 @@ python google_vision_extractor.py your_book.pdf
 python book_formatter.py extracted_google/your_book
 ```
 
+### 4. Extract EPUB
+
+**Deterministic + AI Refinement** (Fast & Accurate)
+
+```bash
+# Basic extraction (Deterministic only)
+python epub_extractor.py your_book.epub
+
+# With AI Refinement (Clean & Rename chapters)
+python epub_extractor.py your_book.epub --key YOUR_GEMINI_KEY
+```
+
+### 5. Split Markdown
+
+**Split large Markdown files into chapters**
+
+```bash
+# Standard Regex Mode (Fast)
+python markdown_splitter.py large_book.md
+
+# AI-Powered Mode (Smart Header Detection)
+python markdown_splitter.py large_book.md --use-ai --key YOUR_GEMINI_KEY
+```
+
 ## Output Structure
 
 ```
@@ -166,7 +190,9 @@ pip install -r requirements_google.txt
 ## File Descriptions
 
 - **google_vision_extractor.py**: OCR extraction only (no formatting)
-- **book_formatter.py**: AI-powered cleaning and organization
+- **book_formatter.py**: AI-powered cleaning and organization for PDFs
+- **epub_extractor.py**: Extract and clean chapters from EPUBs
+- **markdown_splitter.py**: Split large Markdown files into chapters
 - **main.py**: Tesseract-based extractor (English only, local)
 - **.env.example**: Template for API keys
 - **requirements_google.txt**: All dependencies
