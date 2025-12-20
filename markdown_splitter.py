@@ -14,6 +14,7 @@ import json
 import time
 from pathlib import Path
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -35,13 +36,23 @@ class AdvancedMarkdownSplitter:
             genai.configure(api_key=key)
             self.gemini_model = genai.GenerativeModel('gemini-2.5-flash')
             print(f"✓ Gemini initialized (Model: gemini-2.5-flash)")
+            
+            # Safety Settings (Allow all content to prevent false positives)
+            self.safety_settings = {
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
         except Exception as e:
             print(f"❌ Failed to initialize Gemini: {e}")
             sys.exit(1)
 
         self.layout = {} # Stores the book structure
-        self.current_part_folder = None
+        self.current_output_dir = None
         self.file_counter = 0
+        self.current_title = "Frontmatter"
+        self.current_file_path = None
 
     def _sanitize_filename(self, filename: str) -> str:
         """Removes characters from a string that are not safe for filenames."""
@@ -54,7 +65,10 @@ class AdvancedMarkdownSplitter:
         """Helper to call Gemini with retry logic"""
         for attempt in range(max_retries):
             try:
-                response = self.gemini_model.generate_content(prompt)
+                response = self.gemini_model.generate_content(
+                    prompt, 
+                    safety_settings=self.safety_settings
+                )
                 return response.text.strip()
             except Exception as e:
                 if "429" in str(e) or "ResourceExhausted" in str(e):
@@ -127,9 +141,10 @@ If there are no parts, put all chapters in "chapters_without_part".
         book_output_dir.mkdir(parents=True, exist_ok=True)
         
         self.current_output_dir = book_output_dir
-        self.current_file_path = None
-        self.current_content_buffer = []
         self.current_title = "Frontmatter"
+        
+        # Initialize first file
+        self._start_new_file()
         
         # Read file lines
         with open(self.input_path, 'r', encoding='utf-8') as f:
@@ -149,14 +164,11 @@ If there are no parts, put all chapters in "chapters_without_part".
             
             if not result:
                 # Fallback: just append raw text if AI fails
-                self.current_content_buffer.append(chunk_text)
+                self._write_to_current_file(chunk_text)
                 continue
             
             # Handle split
             if result.get("new_chapter_detected"):
-                # Save previous chapter
-                self._save_current_chapter()
-                
                 # Update context
                 new_title = result.get("chapter_title")
                 new_part = result.get("part_title")
@@ -170,14 +182,15 @@ If there are no parts, put all chapters in "chapters_without_part".
                 
                 self.current_title = new_title if new_title else "Untitled"
                 print(f"\n   🔖 New Chapter: {self.current_title}")
+                
+                # Start new file
+                self._start_new_file()
             
             # Append cleaned text
             cleaned_text = result.get("cleaned_text", "")
             if cleaned_text:
-                self.current_content_buffer.append(cleaned_text)
+                self._write_to_current_file(cleaned_text)
         
-        # Save final chapter
-        self._save_current_chapter()
         print(f"\n✨ Processing complete! Created {self.file_counter} files.")
 
     def _process_chunk(self, chunk_text):
@@ -215,25 +228,25 @@ RESPONSE FORMAT (JSON ONLY):
                 return None
         return None
 
-    def _save_current_chapter(self):
-        """Saves the buffered content to a file."""
-        if not self.current_content_buffer:
-            return
-            
-        text = "".join(self.current_content_buffer)
-        if len(text.strip()) < 10:
-            self.current_content_buffer = []
-            return
-            
+    def _start_new_file(self):
+        """Creates a new file for the current chapter."""
         safe_title = self._sanitize_filename(self.current_title)
         filename = f"chapter_{self.file_counter:02d}_{safe_title}.txt"
-        output_path = self.current_output_dir / filename
+        self.current_file_path = self.current_output_dir / filename
         
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(text)
-        
+        # Create empty file
+        with open(self.current_file_path, 'w', encoding='utf-8') as f:
+            pass
+            
         self.file_counter += 1
-        self.current_content_buffer = []
+
+    def _write_to_current_file(self, text):
+        """Appends text to the current file immediately."""
+        if not self.current_file_path:
+            self._start_new_file()
+            
+        with open(self.current_file_path, 'a', encoding='utf-8') as f:
+            f.write(text)
 
 def main():
     parser = argparse.ArgumentParser(description="Advanced AI Markdown Splitter")

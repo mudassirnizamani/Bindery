@@ -475,10 +475,55 @@ his responsibilities is to see that employees wear their hard hats whenever they
 reported that whenever he came across workers who were not wearing hard hats, he would tell them with a lot of
 authority of the regulation and that they must comply. As a result he would get sullen acceptance, and often after
 he left, the workers would remove the hats.
-He decided to try a different approach. The next time he found some of the workers not wearing their
-hard hat, he asked if the hats were uncomfortable or did not fit properly. Then he reminded the men in a pleasant
-tone of voice that the hat was designed to protect them from injury and suggested that it always be worn on the
-job. The result was increased compliance with the regulation with no resentment or emotional upset.
+He decided to try a different approach.Table of Contents
+
+Part One: The Beginning
+1. Introduction to the World
+2. The First Steps
+
+Part Two: The Middle Journey
+3. Challenges Arise
+4. Overcoming Obstacles
+
+Part Three: The Conclusion
+5. The Final Battle
+6. Epilogue
+
+---
+
+# Part One: The Beginning
+
+## 1. Introduction to the World
+This is the start of the journey.
+(Watermark: BestBooks.com)
+The world was vast and unknown.
+
+## 2. The First Steps
+He took his first step.
+Page 12
+It was a small step, but significant.
+
+# Part Two: The Middle Journey
+
+## 3. Challenges Arise
+Suddenly, a wild error appeared.
+(Downloaded from FreeEbooks.net)
+It was a syntax error.
+
+## 4. Overcoming Obstacles
+With determination, he fixed the bug.
+Page 45
+The code compiled successfully.
+
+# Part Three: The Conclusion
+
+## 5. The Final Battle
+The tests were running.
+Red. Green. Refactor.
+
+## 6. Epilogue
+And they coded happily ever after.
+The End.eased compliance with the regulation with no resentment or emotional upset.
 You will find examples of the futility of criticism bristling on a thousand pages of history, Take, for
 example, the famous quarrel between Theodore Roosevelt and President Taft-a quarrel that split the
 Republican party, put Woodrow Wilson in the White House, and wrote bold, luminous lines across the First
