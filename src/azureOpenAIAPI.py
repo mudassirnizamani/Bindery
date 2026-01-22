@@ -5,7 +5,7 @@ Encapsulates logic for interacting with Azure OpenAI models.
 
 import os
 import time
-from openai import AzureOpenAI, RateLimitError, APIError
+from openai import AzureOpenAI, RateLimitError, APIError, BadRequestError
 
 class AzureClient:
     def __init__(self):
@@ -62,6 +62,16 @@ class AzureClient:
                     print(f"    ⏳ Rate limit hit. Waiting {wait_time}s...")
                     time.sleep(wait_time)
                     continue
+            except BadRequestError as e:
+                # Check for content filter
+                if e.body and isinstance(e.body, dict):
+                    error_details = e.body.get('error', {})
+                    if error_details.get('code') == 'content_filter':
+                        print(f"    ⚠ Azure Content Filter triggered: {error_details.get('message')}")
+                        return None # Fail immediately, do not retry
+
+                print(f"    ⚠ Azure Bad Request error: {e}")
+                time.sleep(2)
             except APIError as e:
                 print(f"    ⚠ Azure API error: {e}")
                 time.sleep(2)

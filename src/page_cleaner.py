@@ -97,7 +97,10 @@ CLEANED TEXT:
                         f.write(cleaned_text)
                     print(" ✓ Done")
                 else:
-                    print(" ❌ Failed")
+                    # Fallback to raw content
+                    print(" ⚠ Cleaning failed/filtered. Using raw content fallback.")
+                    with open(output_file, 'w', encoding='utf-8') as f:
+                        f.write(content)
 
                 # Small delay to be nice to API
                 time.sleep(1)
