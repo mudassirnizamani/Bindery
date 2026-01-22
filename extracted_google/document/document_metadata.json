@@ -1,8 +1,0 @@
-{
-  "source": "document.pdf",
-  "extraction_method": "Google Cloud Vision API",
-  "total_pages": 559,
-  "total_characters": 1030997,
-  "avg_confidence": "96.1%",
-  "chapters": 0
-}
