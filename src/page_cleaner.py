@@ -1,58 +1,32 @@
 #!/usr/bin/env python3
 """
-Page Cleaner using Google Gemini
+Page Cleaner using Azure OpenAI
 Iterates over raw pages and uses LLM to clean content.
 Output: book_name/cleaned_pages/page_XXX.txt
 """
 
 import sys
-import os
 import argparse
 import time
 from pathlib import Path
-import google.generativeai as genai
 from dotenv import load_dotenv
+from azureOpenAIAPI import AzureClient
 
 # Load environment variables
 load_dotenv()
 
 class PageCleaner:
-    def __init__(self, raw_pages_dir: str, gemini_api_key: str = None):
+    def __init__(self, raw_pages_dir: str):
         self.raw_pages_dir = Path(raw_pages_dir)
         if not self.raw_pages_dir.exists():
             raise FileNotFoundError(f"Raw pages directory not found: {raw_pages_dir}")
 
-        # Initialize Gemini
+        # Initialize Azure Client
         try:
-            api_key = gemini_api_key or os.getenv('GOOGLE_API_KEY')
-            if not api_key:
-                print("❌ No Gemini API key found. Please set GOOGLE_API_KEY environment variable.")
-                sys.exit(1)
-
-            genai.configure(api_key=api_key)
-            self.gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
-            print(f"✓ Gemini initialized (Model: gemini-2.0-flash-exp)")
+            self.azure_client = AzureClient()
         except Exception as e:
-            print(f"❌ Failed to initialize Gemini: {e}")
+            print(f"❌ Failed to initialize Azure Client: {e}")
             sys.exit(1)
-
-    def _call_gemini_with_retry(self, prompt: str, max_retries: int = 5) -> str:
-        """Helper to call Gemini with retry logic for rate limits"""
-        for attempt in range(max_retries):
-            try:
-                response = self.gemini_model.generate_content(prompt)
-                return response.text.strip()
-            except Exception as e:
-                if "429" in str(e) or "ResourceExhausted" in str(e):
-                    if attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 2
-                        print(f"    ⏳ Rate limit hit. Waiting {wait_time}s...")
-                        time.sleep(wait_time)
-                        continue
-                print(f"    ⚠ Gemini call failed: {e}")
-                # Wait a bit before retry even for other errors
-                time.sleep(2)
-        return None
 
     def clean_pages(self):
         """Main function to clean pages."""
@@ -90,28 +64,24 @@ class PageCleaner:
 
                 if not content.strip():
                     print(" Skipped (Empty)")
-                    # Create empty file to maintain sequence? Or just skip?
-                    # Let's create empty file so we know it was processed.
                     output_file.touch()
                     continue
 
                 prompt = f"""You are a professional book editor.
-Clean the following page text.
+Your task is to clean the text below by removing only noise, while STRICTLY PRESERVING all story content and headings.
 
-TEXT:
+TEXT TO CLEAN:
 {content}
 
-TASK:
-1. Remove all headers and footers (e.g. page numbers, book titles repeated on top/bottom).
-2. Remove any website links, URLs, or "Download from..." text.
-3. Remove watermarks or scanning artifacts.
-4. **IMPORTANT**: PRESERVE all Chapter Headings, Part Headings, and Titles exactly as they are. Do NOT remove them.
-5. PRESERVE the original story/content exactly. Do not summarize or rewrite.
-6. Return ONLY the cleaned text. Do not add markdown code blocks or "Here is the text" comments.
+STRICT INSTRUCTIONS:
+1. **REMOVE NOISE ONLY**: Remove page numbers, headers, footers, website links, URLs, "Download from..." text, watermarks, and scanning artifacts.
+2. **PRESERVE HEADINGS**: You MUST keep all Chapter Headings, Part Headings, Section Titles, and Subtitles exactly as they appear. Do not remove or reformat them.
+3. **PRESERVE CONTENT**: You MUST keep 100% of the original story text. Do not summarize, rewrite, shorten, or omit any paragraph or sentence.
+4. **OUTPUT FORMAT**: Return ONLY the cleaned text. Do not use markdown code blocks. Do not add comments like "Here is the text".
 
 CLEANED TEXT:
 """
-                cleaned_text = self._call_gemini_with_retry(prompt)
+                cleaned_text = self.azure_client.generate_content(prompt)
 
                 if cleaned_text:
                     # Strip code blocks if model adds them despite instructions
@@ -138,13 +108,12 @@ CLEANED TEXT:
         print(f"\n✨ Cleaning complete!")
 
 def main():
-    parser = argparse.ArgumentParser(description="Clean raw pages using Gemini LLM")
+    parser = argparse.ArgumentParser(description="Clean raw pages using Azure OpenAI")
     parser.add_argument("raw_pages_dir", help="Directory containing raw text pages")
-    parser.add_argument("--key", help="Gemini API Key", required=False)
 
     args = parser.parse_args()
 
-    cleaner = PageCleaner(args.raw_pages_dir, gemini_api_key=args.key)
+    cleaner = PageCleaner(args.raw_pages_dir)
     cleaner.clean_pages()
 
 if __name__ == "__main__":
