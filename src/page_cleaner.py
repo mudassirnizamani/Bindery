@@ -8,6 +8,8 @@ Output: book_name/cleaned_pages/page_XXX.txt
 import sys
 import argparse
 import time
+import json
+import re
 from pathlib import Path
 from dotenv import load_dotenv
 from azureOpenAIAPI import AzureClient
@@ -27,6 +29,64 @@ class PageCleaner:
         except Exception as e:
             print(f"❌ Failed to initialize Azure Client: {e}")
             sys.exit(1)
+
+    def sanitize_filename(self, name: str) -> str:
+        """Sanitize string to be safe for filename."""
+        # Remove invalid chars
+        name = re.sub(r'[<>:"/\\|?*]', '', name)
+        # Replace spaces with underscores
+        name = name.replace(' ', '_')
+        # Limit length just in case
+        return name[:50]
+
+    def identify_heading(self, text: str):
+        """
+        Uses LLM to identify Part or Chapter headings.
+        Returns dict: {"name": "...", "found": bool}
+        """
+        prompt = f"""You are a metadata extractor.
+Analyze the text below and look for a specific Part Number, Part Name, Chapter Number, or Chapter Name at the beginning of the text.
+
+TEXT:
+{text[:1000]}
+
+INSTRUCTIONS:
+1. Look for explicit headings like "Chapter 1", "Chapter One", "Part I", "Part 1: The Beginning", "1. The Start", or just a chapter title if it's clearly a heading.
+2. If found, return the heading name.
+3. If NOT found, return empty name.
+4. Output must be strictly valid JSON.
+
+OUTPUT FORMAT:
+{{
+  "name": "Chapter 1",
+  "found": true
+}}
+
+OR
+
+{{
+  "name": "",
+  "found": false
+}}
+
+JSON OUTPUT:
+"""
+        response = self.azure_client.generate_content(prompt)
+        if not response:
+            return {"name": "", "found": False}
+
+        try:
+            # Strip markdown code blocks if present
+            if "```json" in response:
+                response = response.split("```json")[1].split("```")[0]
+            elif "```" in response:
+                response = response.split("```")[1].split("```")[0]
+
+            data = json.loads(response.strip())
+            return data
+        except Exception as e:
+            print(f"    ⚠ Failed to parse heading JSON: {e}")
+            return {"name": "", "found": False}
 
     def clean_pages(self):
         """Main function to clean pages."""
@@ -50,10 +110,13 @@ class PageCleaner:
         print(f"  Found {total_files} pages.")
 
         for i, file_path in enumerate(files):
-            # Check if already cleaned
-            output_file = cleaned_pages_dir / file_path.name
-            if output_file.exists():
-                 print(f"  [{i+1}/{total_files}] Skipping {file_path.name} (Already exists)", end='\r')
+            # Check if already cleaned (checking for any file starting with page_XXX)
+            # file_path.stem is typically 'page_001'
+            file_stem = file_path.stem
+            existing_files = list(cleaned_pages_dir.glob(f"{file_stem}*"))
+
+            if existing_files:
+                 print(f"  [{i+1}/{total_files}] Skipping {file_path.name} (Already exists: {existing_files[0].name})", end='\r')
                  continue
 
             print(f"  [{i+1}/{total_files}] Cleaning: {file_path.name}...", end='', flush=True)
@@ -64,9 +127,12 @@ class PageCleaner:
 
                 if not content.strip():
                     print(" Skipped (Empty)")
+                    # Create empty file with basic name
+                    output_file = cleaned_pages_dir / f"{file_stem}.txt"
                     output_file.touch()
                     continue
 
+                # Step 1: Clean Content
                 prompt = f"""You are a professional book editor.
 Your task is to clean the text below by removing only noise, while STRICTLY PRESERVING all story content and headings.
 
@@ -83,6 +149,7 @@ CLEANED TEXT:
 """
                 cleaned_text = self.azure_client.generate_content(prompt)
 
+                final_content = content # Fallback
                 if cleaned_text:
                     # Strip code blocks if model adds them despite instructions
                     if cleaned_text.startswith("```"):
@@ -92,15 +159,25 @@ CLEANED TEXT:
                          if lines and lines[-1].startswith("```"):
                              lines = lines[:-1]
                          cleaned_text = '\n'.join(lines)
-
-                    with open(output_file, 'w', encoding='utf-8') as f:
-                        f.write(cleaned_text)
-                    print(" ✓ Done")
+                    final_content = cleaned_text
                 else:
-                    # Fallback to raw content
-                    print(" ⚠ Cleaning failed/filtered. Using raw content fallback.")
-                    with open(output_file, 'w', encoding='utf-8') as f:
-                        f.write(content)
+                    print(" ⚠ Cleaning failed/filtered. Using raw content fallback.", end='')
+
+                # Step 2: Identify Heading
+                heading_data = self.identify_heading(final_content)
+
+                final_filename = f"{file_stem}.txt"
+                if heading_data.get("found"):
+                    safe_name = self.sanitize_filename(heading_data.get("name", "").strip())
+                    if safe_name:
+                        final_filename = f"{file_stem}_{safe_name}.txt"
+                        print(f" -> Found: {safe_name}", end='')
+
+                output_file = cleaned_pages_dir / final_filename
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    f.write(final_content)
+
+                print(" ✓ Done")
 
                 # Small delay to be nice to API
                 time.sleep(1)
