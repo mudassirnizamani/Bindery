@@ -3,6 +3,7 @@
 Google Cloud Vision API PDF Extractor
 High-accuracy OCR using Google's Vision API (95-99% accuracy)
 Simple extraction - just OCR, no formatting
+Output: book_name/raw_pages/page_XXX.txt
 """
 
 import sys
@@ -221,7 +222,7 @@ class GoogleVisionPDFExtractor:
         print(f"  📁 Output: {pdf_output}/")
         print(f"  📄 Raw pages: raw_pages/ folder")
         print(f"  📊 Pages index: pages_index.json")
-        print(f"\n  💡 Next step: Run book_formatter.py to clean and organize the text")
+        print(f"\n  💡 Next step: Run page_cleaner.py to clean the text")
 
         return {
             'success': True,
@@ -240,7 +241,6 @@ def main():
         print("\nHigh-accuracy OCR extraction (no formatting)")
         print("  - Vision API: 95-99% OCR accuracy")
         print("  - Extracts raw text from all pages")
-        print("  - Use book_formatter.py afterwards for cleaning & organizing")
         print("\nSetup:")
         print("1. Install: pip install google-cloud-vision pdf2image")
         print("2. Get Vision API credentials from Google Cloud Console")
