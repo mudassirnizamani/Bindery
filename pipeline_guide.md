@@ -40,7 +40,27 @@ python3 google_vision_extractor.py book_name.pdf
 ```
 *   **Output**: `extracted_google/book_name/raw_pages/page_XXX.txt`
 
-## 2. Cleaning
+## 2. Page Management (Optional)
+
+If you need to remove a specific page (e.g., a blank page, an ad, or a duplicate) from the extracted raw pages, you can use the `delete_page.py` tool. This tool will delete the specified page, renumber all subsequent pages to maintain the sequence, and update the `pages_index.json` file.
+
+**Usage:** Provide the path to the `raw_pages` directory and the page number to delete.
+
+```bash
+# Syntax
+python3 src/delete_page.py <path_to_raw_pages> <page_number>
+
+# Example: Delete page 20
+python3 src/delete_page.py extracted_google/book_name/raw_pages 20
+```
+
+*   **Result**:
+    *   `page_020.txt` is deleted.
+    *   `page_021.txt` becomes `page_020.txt`.
+    *   `page_022.txt` becomes `page_021.txt`, and so on.
+    *   `pages_index.json` is updated with new counts and file references.
+
+## 3. Cleaning
 
 Uses Gemini LLM to clean the raw text. It preserves chapter headings but removes artifacts like "Page 22", watermarks, and URLs.
 
@@ -55,7 +75,7 @@ python3 page_cleaner.py extracted_google/book_name/raw_pages
 ```
 *   **Output**: `.../book_name/cleaned_pages/page_XXX.txt`
 
-## 3. Compilation
+## 4. Compilation
 
 Combines the cleaned pages into a single file in the correct order.
 
