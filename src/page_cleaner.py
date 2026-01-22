@@ -48,7 +48,7 @@ class PageCleaner:
 Analyze the text below and look for a specific Part Number, Part Name, Chapter Number, or Chapter Name at the beginning of the text.
 
 TEXT:
-{text[:1000]}
+{text[:2000]}
 
 INSTRUCTIONS:
 1. Look for explicit headings like "Chapter 1", "Chapter One", "Part I", "Part 1: The Beginning", "1. The Start", or just a chapter title if it's clearly a heading.
