@@ -55,7 +55,17 @@ class AzureClient:
                     ],
                     temperature=0.1, # Low temperature for consistent cleaning
                 )
-                return response.choices[0].message.content.strip()
+
+                content = response.choices[0].message.content
+                if content is None:
+                    # Check if it was filtered
+                    finish_reason = response.choices[0].finish_reason
+                    if finish_reason == 'content_filter':
+                        print("    ⚠ Azure Content Filter triggered (finish_reason).")
+                        return None
+                    return "" # Return empty string if just empty content
+
+                return content.strip()
             except RateLimitError:
                  if attempt < max_retries - 1:
                     wait_time = (attempt + 1) * 2
