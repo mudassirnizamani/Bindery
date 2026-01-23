@@ -61,12 +61,13 @@ class AzureClient:
                 finish_reason = response.choices[0].finish_reason
                 print(f"    ℹ Token Usage: Prompt={usage.prompt_tokens}, Completion={usage.completion_tokens}, Total={usage.total_tokens} | Finish Reason: {finish_reason}")
 
+                # Check for content filter immediately
+                if finish_reason == 'content_filter':
+                    print("    ⚠ Azure Content Filter triggered (finish_reason).")
+                    return None
+
                 content = response.choices[0].message.content
                 if content is None:
-                    # Check if it was filtered
-                    if finish_reason == 'content_filter':
-                        print("    ⚠ Azure Content Filter triggered (finish_reason).")
-                        return None
                     return "" # Return empty string if just empty content
 
                 return content.strip()
