@@ -91,29 +91,61 @@ JSON OUTPUT:
     def split_text_into_chunks(self, text: str, chunk_size: int = 2000) -> list[str]:
         """
         Splits text into chunks of roughly chunk_size characters.
-        Constraint: Each chunk must end on a word ending with a full stop.
-        Preserves original whitespace and formatting.
+        Strategy:
+        1. Split by double newlines (paragraphs) to maintain structure.
+        2. If a paragraph is too large, split by words/tokens (fallback).
+        3. Strict order preservation.
         """
-        # Split by whitespace but keep the delimiters (spaces, newlines, etc.)
-        # This regex matches any whitespace sequence or any non-whitespace sequence
-        tokens = re.findall(r'\S+|\s+', text)
+        # Split by paragraph separators (2 or more newlines)
+        # We capture the separator so we can reconstruct the text perfectly.
+        parts = re.split(r'(\n\s*\n)', text)
 
         chunks = []
         current_chunk = []
         current_length = 0
 
-        for token in tokens:
-            current_chunk.append(token)
-            current_length += len(token)
+        for part in parts:
+            if not part: continue
 
-            # Check if we crossed the chunk size threshold
-            # Only consider breaking if the token is a word (not whitespace) that ends with '.'
-            if current_length >= chunk_size and not token.isspace() and token.endswith('.'):
-                chunks.append("".join(current_chunk))
-                current_chunk = []
-                current_length = 0
+            part_len = len(part)
 
-        # Add remaining tokens
+            # If adding this part exceeds chunk size...
+            if current_length + part_len > chunk_size:
+                # If current buffer is not empty, flush it
+                if current_length > 0:
+                    chunks.append("".join(current_chunk))
+                    current_chunk = []
+                    current_length = 0
+
+                # Now we have an empty buffer. Does the part fit on its own?
+                if part_len > chunk_size:
+                    # Part is huge (e.g. a very long paragraph). Split it deeper.
+                    # We use the token-based split logic here.
+                    tokens = re.findall(r'\S+|\s+', part)
+                    sub_chunk = []
+                    sub_len = 0
+                    for token in tokens:
+                        sub_chunk.append(token)
+                        sub_len += len(token)
+                        # Split if we cross threshold and end on punctuation
+                        if sub_len >= chunk_size and not token.isspace() and token[-1] in '.!?':
+                            chunks.append("".join(sub_chunk))
+                            sub_chunk = []
+                            sub_len = 0
+
+                    if sub_chunk:
+                        # Add remainder to current buffer
+                        current_chunk = sub_chunk
+                        current_length = sub_len
+                else:
+                    # Part fits in a new empty chunk
+                    current_chunk.append(part)
+                    current_length += part_len
+            else:
+                # Fits in current chunk
+                current_chunk.append(part)
+                current_length += part_len
+
         if current_chunk:
             chunks.append("".join(current_chunk))
 
