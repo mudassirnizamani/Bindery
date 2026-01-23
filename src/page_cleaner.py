@@ -88,6 +88,84 @@ JSON OUTPUT:
             print(f"    ⚠ Failed to parse heading JSON: {e}")
             return {"name": "", "found": False}
 
+    def split_text_into_chunks(self, text: str, chunk_size: int = 2000) -> list[str]:
+        """
+        Splits text into chunks of roughly chunk_size characters.
+        Constraint: Each chunk must end on a word ending with a full stop.
+        Preserves original whitespace and formatting.
+        """
+        # Split by whitespace but keep the delimiters (spaces, newlines, etc.)
+        # This regex matches any whitespace sequence or any non-whitespace sequence
+        tokens = re.findall(r'\S+|\s+', text)
+
+        chunks = []
+        current_chunk = []
+        current_length = 0
+
+        for token in tokens:
+            current_chunk.append(token)
+            current_length += len(token)
+
+            # Check if we crossed the chunk size threshold
+            # Only consider breaking if the token is a word (not whitespace) that ends with '.'
+            if current_length >= chunk_size and not token.isspace() and token.endswith('.'):
+                chunks.append("".join(current_chunk))
+                current_chunk = []
+                current_length = 0
+
+        # Add remaining tokens
+        if current_chunk:
+            chunks.append("".join(current_chunk))
+
+        return chunks
+
+    def clean_page_with_chunking(self, content: str) -> str:
+        """
+        Fallback method to clean page in chunks.
+        Triggered when whole-page cleaning fails (e.g., content filter).
+        """
+        chunks = self.split_text_into_chunks(content)
+        print(f"    ℹ Content Filter/Error detected. Switching to chunking strategy ({len(chunks)} chunks)...")
+
+        cleaned_chunks = []
+        for i, chunk in enumerate(chunks):
+            prompt = f"""You are a professional book editor.
+Your task is to clean the text below by removing only noise, while STRICTLY PRESERVING all story content.
+
+TEXT TO CLEAN:
+{chunk}
+
+STRICT INSTRUCTIONS:
+1. **REMOVE NOISE ONLY**: Remove page numbers, headers, footers, website links, URLs, watermarks.
+2. **PRESERVE CONTENT**: Keep the text exactly as is, just remove the noise.
+3. **OUTPUT FORMAT**: Return ONLY the cleaned text.
+
+CLEANED TEXT:
+"""
+            try:
+                chunk_response = self.azure_client.generate_content(prompt)
+            except Exception as e:
+                print(f"      ⚠ Chunk API call failed: {e}")
+                chunk_response = None
+
+            if chunk_response:
+                # Strip markdown code blocks
+                if chunk_response.startswith("```"):
+                     lines = chunk_response.split('\n')
+                     if lines[0].startswith("```"):
+                         lines = lines[1:]
+                     if lines and lines[-1].startswith("```"):
+                         lines = lines[:-1]
+                     chunk_response = '\n'.join(lines)
+                cleaned_chunks.append(chunk_response)
+            else:
+                print(f"      ⚠ Chunk {i+1} failed/filtered. Using raw text for this chunk.")
+                cleaned_chunks.append(chunk) # Fallback Option B: Use raw chunk
+
+            time.sleep(0.5) # Slight delay between chunks
+
+        return "\n".join(cleaned_chunks)
+
     def clean_pages(self):
         """Main function to clean pages."""
         # Setup output directory
@@ -147,9 +225,18 @@ STRICT INSTRUCTIONS:
 
 CLEANED TEXT:
 """
-                cleaned_text = self.azure_client.generate_content(prompt)
+                try:
+                    cleaned_text = self.azure_client.generate_content(prompt)
+                except Exception as e:
+                    print(f"    ⚠ API call failed: {e}")
+                    cleaned_text = None
 
                 final_content = content # Fallback
+
+                # If initial cleaning failed (None) or filtered, try chunking
+                if cleaned_text is None:
+                    cleaned_text = self.clean_page_with_chunking(content)
+
                 if cleaned_text:
                     # Strip code blocks if model adds them despite instructions
                     if cleaned_text.startswith("```"):
@@ -169,7 +256,7 @@ CLEANED TEXT:
 
                     final_content = cleaned_text
                 else:
-                    print(" ⚠ Cleaning failed/filtered. Using raw content fallback.", end='')
+                    print(" ⚠ Cleaning failed completely. Using raw content fallback.", end='')
 
                 # Step 2: Identify Heading
                 heading_data = self.identify_heading(final_content)
