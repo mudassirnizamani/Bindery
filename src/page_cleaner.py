@@ -159,6 +159,14 @@ CLEANED TEXT:
                          if lines and lines[-1].startswith("```"):
                              lines = lines[:-1]
                          cleaned_text = '\n'.join(lines)
+
+                    # Check for potential truncation (90% rule)
+                    raw_len = len(content)
+                    clean_len = len(cleaned_text)
+                    print(f"    ℹ Content Length: Raw={raw_len}, Cleaned={clean_len}")
+                    if raw_len > 0 and (clean_len / raw_len) < 0.9:
+                        print(f"    ⚠ WARNING: Cleaned content is significantly shorter ({clean_len}/{raw_len} chars, {int((clean_len/raw_len)*100)}%). Possible truncation.")
+
                     final_content = cleaned_text
                 else:
                     print(" ⚠ Cleaning failed/filtered. Using raw content fallback.", end='')

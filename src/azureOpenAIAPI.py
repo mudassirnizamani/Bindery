@@ -56,10 +56,14 @@ class AzureClient:
                     temperature=0.1, # Low temperature for consistent cleaning
                 )
 
+                # Log usage and finish reason
+                usage = response.usage
+                finish_reason = response.choices[0].finish_reason
+                print(f"    ℹ Token Usage: Prompt={usage.prompt_tokens}, Completion={usage.completion_tokens}, Total={usage.total_tokens} | Finish Reason: {finish_reason}")
+
                 content = response.choices[0].message.content
                 if content is None:
                     # Check if it was filtered
-                    finish_reason = response.choices[0].finish_reason
                     if finish_reason == 'content_filter':
                         print("    ⚠ Azure Content Filter triggered (finish_reason).")
                         return None
