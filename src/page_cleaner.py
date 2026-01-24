@@ -18,6 +18,10 @@ from azureOpenAIAPI import AzureClient
 load_dotenv()
 
 class PageCleaner:
+    # When True, always use chunking strategy for cleaning pages.
+    # When False, try full-page cleaning first, then fallback to chunking if needed.
+    ALWAYS_USE_CHUNKING = True
+
     def __init__(self, raw_pages_dir: str):
         self.raw_pages_dir = Path(raw_pages_dir)
         if not self.raw_pages_dir.exists():
@@ -248,37 +252,42 @@ CLEANED TEXT:
                     continue
 
                 # Step 1: Clean Content
-                prompt = self._get_cleaning_prompt(content)
-                try:
-                    cleaned_text = self.azure_client.generate_content(prompt)
-                except Exception as e:
-                    print(f"    ⚠ API call failed: {e}")
-                    cleaned_text = None
+                final_content = content  # Fallback
 
-                final_content = content # Fallback
-
-                # Strip code blocks from initial attempt to ensure accurate length check
-                if cleaned_text and cleaned_text.startswith("```"):
-                     lines = cleaned_text.split('\n')
-                     if lines[0].startswith("```"):
-                         lines = lines[1:]
-                     if lines and lines[-1].startswith("```"):
-                         lines = lines[:-1]
-                     cleaned_text = '\n'.join(lines)
-
-                # Check if we need to fallback to chunking (Failure or < 95% retention)
-                if cleaned_text is None:
+                if self.ALWAYS_USE_CHUNKING:
+                    # Always use chunking strategy
+                    print(f"\n    ℹ Using chunking strategy (ALWAYS_USE_CHUNKING=True)...")
                     cleaned_text = self.clean_page_with_chunking(content)
-                elif len(content) > 0 and (len(cleaned_text) / len(content)) < 0.95:
-                    print(f"    ⚠ Cleaned content is significantly shorter ({len(cleaned_text)}/{len(content)} chars, {int((len(cleaned_text)/len(content))*100)}%). Triggering chunking process...")
-                    cleaned_text = self.clean_page_with_chunking(content)
+                else:
+                    # Try full-page cleaning first, then fallback to chunking if needed
+                    prompt = self._get_cleaning_prompt(content)
+                    try:
+                        cleaned_text = self.azure_client.generate_content(prompt)
+                    except Exception as e:
+                        print(f"    ⚠ API call failed: {e}")
+                        cleaned_text = None
+
+                    # Strip code blocks from initial attempt to ensure accurate length check
+                    if cleaned_text and cleaned_text.startswith("```"):
+                         lines = cleaned_text.split('\n')
+                         if lines[0].startswith("```"):
+                             lines = lines[1:]
+                         if lines and lines[-1].startswith("```"):
+                             lines = lines[:-1]
+                         cleaned_text = '\n'.join(lines)
+
+                    # Check if we need to fallback to chunking (Failure or < 95% retention)
+                    if cleaned_text is None:
+                        cleaned_text = self.clean_page_with_chunking(content)
+                    elif len(content) > 0 and (len(cleaned_text) / len(content)) < 0.95:
+                        print(f"    ⚠ Cleaned content is significantly shorter ({len(cleaned_text)}/{len(content)} chars, {int((len(cleaned_text)/len(content))*100)}%). Triggering chunking process...")
+                        cleaned_text = self.clean_page_with_chunking(content)
 
                 if cleaned_text:
-
                     # Check for potential truncation (90% rule)
                     raw_len = len(content)
                     clean_len = len(cleaned_text)
-                    print(f"    ℹ Content Length: Raw={raw_len}, Cleaned={clean_len}")
+                    print(f"    ℹ Content Length: {int((clean_len/raw_len)*100)}%). Possible truncation. Raw={raw_len}, Cleaned={clean_len}")
                     if raw_len > 0 and (clean_len / raw_len) < 0.9:
                         print(f"    ⚠ WARNING: Cleaned content is significantly shorter ({clean_len}/{raw_len} chars, {int((clean_len/raw_len)*100)}%). Possible truncation.")
 

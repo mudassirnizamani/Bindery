@@ -59,7 +59,7 @@ class AzureClient:
                 # Log usage and finish reason
                 usage = response.usage
                 finish_reason = response.choices[0].finish_reason
-                print(f"    ℹ Token Usage: Prompt={usage.prompt_tokens}, Completion={usage.completion_tokens}, Total={usage.total_tokens} | Finish Reason: {finish_reason}")
+                # print(f"    ℹ Token Usage: Prompt={usage.prompt_tokens}, Completion={usage.completion_tokens}, Total={usage.total_tokens} | Finish Reason: {finish_reason}")
 
                 # Check for content filter immediately
                 if finish_reason == 'content_filter':
