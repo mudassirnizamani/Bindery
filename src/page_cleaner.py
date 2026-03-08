@@ -43,31 +43,40 @@ class PageCleaner:
         # Limit length just in case
         return name[:50]
 
-    def identify_heading(self, text: str):
+    def extract_title(self, text: str):
         """
-        Uses LLM to identify Part or Chapter headings.
+        Uses LLM to extract the chapter title or part name from the first 1000 characters.
         Returns dict: {"name": "...", "found": bool}
         """
-        prompt = f"""You are a metadata extractor.
-Analyze the text below and look for a specific Part Number, Part Name, Chapter Number, or Chapter Name at the beginning of the text.
+        prompt = f"""You are a precise title extractor.
+Your ONLY job is to carefully read the beginning of the text, understand its context, and identify the exact chapter title or part heading.
 
-TEXT:
-{text[:2000]}
+TEXT TO ANALYZE (First 1000 chars from the START of the page):
+{text[:1000]}
 
 INSTRUCTIONS:
-1. Look for explicit headings like "Chapter 1", "Chapter One", "Part I", "Part 1: The Beginning", "1. The Start", or just a chapter title if it's clearly a heading.
-2. If found, return the heading name.
-3. If NOT found, return empty name.
-4. Output must be strictly valid JSON.
+1. Look ONLY at the very beginning of the given text to identify the structural heading/title.
+2. IMPORTANT: Most of the time, chapter titles DO NOT include the word "Chapter". They might just be a descriptive name like "American Revolutionary", or a standalone number like "1", or combination of both.
+3. The heading might span multiple lines at the top. For example:
+   "Introduction
+   Karl Marx, Ghost in the American Machine"
+   OR
+   "1
+   American Revolutionary
+   The US Civil War"
+4. If the heading is split across multiple lines, combine them into a single string separated by " - " (e.g., "Introduction - Karl Marx, Ghost in the American Machine" or "Chapter 1 - American Revolutionary - The US Civil War").
+5. If you find a standalone number like "1" at the start denoting a chapter, you may format it as "Chapter 1".
+6. If a clear heading is found, return `found: true` and the combined string as `name`.
+7. If the text immediately starts with normal body content without a distinct heading, return `found: false` and an empty string.
+8. Return strictly valid JSON.
 
 OUTPUT FORMAT:
 {{
-  "name": "Chapter 1",
+  "name": "Chapter 1 - American Revolutionary",
   "found": true
 }}
 
-OR
-
+OR (if not found):
 {{
   "name": "",
   "found": false
@@ -232,7 +241,13 @@ CLEANED TEXT:
             # Check if already cleaned (checking for any file starting with page_XXX)
             # file_path.stem is typically 'page_001'
             file_stem = file_path.stem
-            existing_files = list(cleaned_pages_dir.glob(f"{file_stem}*"))
+            
+            # Enforce sequential filenames: extract numbers from stem or fallback to sequential index
+            nums = re.findall(r'\d+', file_stem)
+            num_prefix = nums[-1].zfill(3) if nums else f"{(i+1):03d}"
+
+            # Check for existing processed files matching both old and new patterns
+            existing_files = list(cleaned_pages_dir.glob(f"{file_stem}*")) + list(cleaned_pages_dir.glob(f"{num_prefix}*"))
 
             if existing_files:
                  print(f"  [{i+1}/{total_files}] Skipping {file_path.name} (Already exists: {existing_files[0].name})", end='\r')
@@ -246,8 +261,8 @@ CLEANED TEXT:
 
                 if not content.strip():
                     print(" Skipped (Empty)")
-                    # Create empty file with basic name
-                    output_file = cleaned_pages_dir / f"{file_stem}.txt"
+                    # Create empty file with padded numeric prefix
+                    output_file = cleaned_pages_dir / f"{num_prefix}.txt"
                     output_file.touch()
                     continue
 
@@ -295,14 +310,20 @@ CLEANED TEXT:
                 else:
                     print(" ⚠ Cleaning failed completely. Using raw content fallback.", end='')
 
-                # Step 2: Identify Heading
-                heading_data = self.identify_heading(final_content)
+                # Step 2: Extract Heading Title
+                # We use the cleaned content's first 1000 chars to find the title
+                heading_data = self.extract_title(final_content)
 
-                final_filename = f"{file_stem}.txt"
-                if heading_data.get("found"):
-                    safe_name = self.sanitize_filename(heading_data.get("name", "").strip())
+                final_filename = f"{num_prefix}.txt"
+                title_name = heading_data.get("name", "").strip()
+
+                if heading_data.get("found") and title_name:
+                    # Auto-Inject Title String at the very start
+                    final_content = f"TITLE: {title_name}\n\n{final_content}"
+                    
+                    safe_name = self.sanitize_filename(title_name)
                     if safe_name:
-                        final_filename = f"{file_stem}_{safe_name}.txt"
+                        final_filename = f"{num_prefix}_{safe_name}.txt"
                         print(f" -> Found: {safe_name}", end='')
 
                 output_file = cleaned_pages_dir / final_filename

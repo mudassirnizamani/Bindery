@@ -82,8 +82,20 @@ class EpubExtractor:
                 # Remove scripts and styles
                 for script in soup(["script", "style"]):
                     script.decompose()
+                # Attempt to find the very first prominent heading (h1, h2, h3 or title)
+                # We limit the search to the first ~20 tags to ensure we only grab from the top of the document
+                heading_text = ""
+                for element in soup.find_all(True, limit=20):
+                    if element.name in ['h1', 'h2', 'h3', 'title']:
+                        if element.get_text(strip=True):
+                            heading_text = element.get_text(separator=' - ', strip=True)
+                            break
                 
                 text = soup.get_text(separator='\n', strip=True)
+                
+                # Prepend the embedded heading if found, to give the AI a strong hint
+                if heading_text and not text.startswith(heading_text):
+                    text = f"{heading_text}\n\n{text}"
                 
                 # Save as page
                 if text.strip(): # Only save if there is content
