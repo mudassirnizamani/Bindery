@@ -1,0 +1,9 @@
+# Python dependencies for smart_fm_server scripts
+# Note: hutrans is installed from GitHub, not PyPI
+# Install dependencies for hutrans first
+cython
+scipy
+git+https://github.com/irshadbhat/indic-wx-converter.git
+# Note: python-hutrans requires --no-build-isolation flag due to Cython dependency
+git+https://github.com/ltrc/python-hutrans.git
+requests>=2.28.0 

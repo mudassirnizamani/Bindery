@@ -1,0 +1,256 @@
+version: "3"
+
+env:
+  ENV: env
+
+dotenv: ['app.env']
+
+tasks:
+  # Core Processing Tasks
+  delete_page:
+    desc: Run the delete page script
+    cmds:
+      - source ./bin/activate && python src/delete_page.py {{.CLI_ARGS}}
+    silent: false
+
+  epub_extractor:
+    desc: Run the epub extractor script
+    cmds:
+      - source ./bin/activate && python src/epub_extractor.py {{.CLI_ARGS}}
+    silent: false
+
+  page_cleaner:
+    desc: Run the page cleaner script
+    cmds:
+      - source ./bin/activate && python src/page_cleaner.py {{.CLI_ARGS}}
+    silent: false
+
+  # Bookey Scraper Tasks
+  scraper:install:
+    desc: Install Python dependencies for the Bookey scraper
+    cmds:
+      - cd bookey_scraper/src && pip install -r requirements.txt
+    silent: false
+
+  scraper:test:
+    desc: Run test extraction of first 3 categories
+    cmds:
+      - cd bookey_scraper/src && PYTHONPATH=. python systematic_extraction_runner.py --test
+    silent: false
+
+  scraper:all:
+    desc: Extract all 12 categories
+    cmds:
+      - cd bookey_scraper/src && PYTHONPATH=. python systematic_extraction_runner.py --all
+    silent: false
+
+  scraper:range:
+    desc: Extract a specific range of categories
+    cmds:
+      - cd bookey_scraper/src && PYTHONPATH=. python systematic_extraction_runner.py --range {{.START}}-{{.END}}
+    silent: false
+
+  scraper:select:
+    desc: Extract specific categories by selection
+    cmds:
+      - cd bookey_scraper/src && PYTHONPATH=. python systematic_extraction_runner.py --select {{.CATEGORIES}}
+    silent: false
+
+  scraper:list:
+    desc: Show already extracted categories
+    cmds:
+      - cd bookey_scraper/src && PYTHONPATH=. python systematic_extraction_runner.py --list
+    silent: false
+
+  scraper:fetch-books:
+    desc: Fetch all books from extracted categories
+    cmds:
+      - cd bookey_scraper/src && PYTHONPATH=. python bookey_scraper_cli.py --fetch-books
+    silent: false
+
+  scraper:upload-categories:
+    desc: Upload categories and subcategories to the SmartFM API
+    cmds:
+      - cd bookey_scraper/src && PYTHONPATH=. python3 -m api.category_uploader
+    silent: false
+
+  scraper:upload-books:
+    desc: Upload books and their authors to the SmartFM API
+    cmds:
+      - cd bookey_scraper/src && PYTHONPATH=. python3 -m api.book_uploader
+    silent: false
+
+  scraper:extract-authors:
+    desc: Extract author information from all book JSON files and save to authors.json
+    cmds:
+      - cd bookey_scraper/src && PYTHONPATH=. python3 -c "from api.author_manager import AuthorManager; from api.auth import SmartFMAuth; auth = SmartFMAuth('http://localhost:6969'); am = AuthorManager('http://localhost:6969', auth, 'test@gmail.com', 'minemine123@'); am.extract_authors_from_books()"
+    silent: false
+
+  scraper:create-authors:
+    desc: Create authors in the API from the authors.json file
+    cmds:
+      - cd bookey_scraper/src && PYTHONPATH=. python3 -c "from api.author_manager import AuthorManager; from api.auth import SmartFMAuth; auth = SmartFMAuth('http://localhost:6969'); am = AuthorManager('http://localhost:6969', auth, 'test@gmail.com', 'minemine123@'); am.create_authors_from_json()"
+    silent: false
+
+  scraper:fetch-book:
+    desc: Fetch a single book by ID and save it locally
+    cmds:
+      - cd bookey_scraper/src && PYTHONPATH=. python books/fetch_book.py {{.CLI_ARGS}} --summary
+    silent: false
+
+  scraper:fetch-book-json:
+    desc: Fetch a single book by ID and output JSON data
+    cmds:
+      - cd bookey_scraper/src && PYTHONPATH=. python books/fetch_book.py {{.CLI_ARGS}}
+    silent: false
+
+  # Scripts tasks
+  scripts:setup:
+    desc: Set up Python virtual environment and install dependencies for the scripts
+    cmds:
+      - cd scripts && python -m venv venv
+      - cd scripts && venv/bin/pip install --upgrade pip
+      - cd scripts && venv/bin/pip install setuptools wheel
+      - cd scripts && venv/bin/pip install numpy
+      - cd scripts && venv/bin/pip install cython scipy
+      - cd scripts && venv/bin/pip install git+https://github.com/irshadbhat/indic-wx-converter.git
+      - cd scripts && venv/bin/python install_hutrans.py
+      - cd scripts && venv/bin/pip install requests
+    silent: false
+
+  scripts:setup-alternative:
+    desc: Alternative setup method for hutrans with proper numpy headers
+    cmds:
+      - cd scripts && python -m venv venv
+      - cd scripts && venv/bin/pip install --upgrade pip
+      - cd scripts && venv/bin/pip install setuptools wheel numpy
+      - cd scripts && venv/bin/pip install pybind11
+      - cd scripts && venv/bin/pip install cython scipy
+      - cd scripts && venv/bin/pip install git+https://github.com/irshadbhat/indic-wx-converter.git
+      - cd scripts && venv/bin/pip install --no-use-pep517 git+https://github.com/ltrc/python-hutrans.git
+      - cd scripts && venv/bin/pip install requests
+    silent: false
+
+  scripts:install:
+    desc: Install Python dependencies for the scripts (requires venv setup first)
+    cmds:
+      - cd scripts && venv/bin/pip install --upgrade pip
+      - cd scripts && venv/bin/pip install cython scipy
+      - cd scripts && venv/bin/pip install git+https://github.com/irshadbhat/indic-wx-converter.git
+      - cd scripts && venv/bin/pip install --no-build-isolation git+https://github.com/ltrc/python-hutrans.git
+      - cd scripts && venv/bin/pip install requests
+    silent: false
+
+  scripts:transliterate:
+    desc: Transliterate Urdu text to Hindi using hutrans
+    cmds:
+      - cd scripts && venv/bin/python urdu_transliterator.py "{{.CLI_ARGS}}"
+    silent: false
+
+  scripts:test-transliterate:
+    desc: Test the Urdu transliterator with sample text
+    cmds:
+      - cd scripts && venv/bin/python urdu_transliterator.py "یہ اردو متن ہے"
+    silent: false
+
+  scripts:check-dependencies:
+    desc: Check if all Python dependencies are properly installed
+    cmds:
+      - cd scripts && venv/bin/python -c "import hutrans; print('✅ hutrans library is installed successfully')"
+      - cd scripts && venv/bin/python -c "from hutrans import transliterator; print('✅ hutrans can be imported successfully')"
+    silent: false
+
+  scripts:simple-setup:
+    desc: Set up simple transliterator without complex dependencies
+    cmds:
+      - cd scripts && python -m venv venv
+      - cd scripts && venv/bin/pip install --upgrade pip
+      - echo "✅ Simple transliterator setup complete - no external dependencies needed!"
+    silent: false
+
+  scripts:test-simple:
+    desc: Test the simple Urdu transliterator with sample text
+    cmds:
+      - cd scripts && python urdu_transliterator_simple.py "یہ اردو متن ہے"
+    silent: false
+
+  scripts:transliterate-simple:
+    desc: Transliterate Urdu text using simple character mapping
+    cmds:
+      - cd scripts && python urdu_transliterator_simple.py "{{.CLI_ARGS}}"
+    silent: false
+
+  scripts:setup-transformer:
+    desc: Set up transformer-based transliterator dependencies
+    cmds:
+      - cd scripts && python -m venv venv
+      - cd scripts && venv/bin/pip install --upgrade pip
+      - cd scripts && venv/bin/pip install transformers torch
+      - echo "✅ Transformer transliterator setup complete!"
+    silent: false
+
+  scripts:transliterate-transformer:
+    desc: Transliterate Urdu text using transformer model (M2M100)
+    cmds:
+      - cd scripts && venv/bin/python transformer_transliterator.py "{{.CLI_ARGS}}"
+    silent: false
+
+  scripts:test-transformer:
+    desc: Test the transformer transliterator with sample text
+    cmds:
+      - cd scripts && venv/bin/python transformer_transliterator.py "یہ اردو متن ہے"
+    silent: false
+
+  scripts:setup-ai4bharat:
+    desc: Set up AI4Bharat transliterator dependencies
+    cmds:
+      - cd scripts && python -m venv venv
+      - cd scripts && venv/bin/pip install --upgrade pip
+      - cd scripts && venv/bin/pip install ai4bharat-transliteration
+      - echo "✅ AI4Bharat transliterator setup complete!"
+    silent: false
+
+  scripts:transliterate-ai4bharat:
+    desc: Transliterate Urdu text using AI4Bharat library
+    cmds:
+      - cd scripts && venv/bin/python ai4bharat_transliterator.py "{{.CLI_ARGS}}"
+    silent: false
+
+  scripts:test-ai4bharat:
+    desc: Test the AI4Bharat transliterator with sample text
+    cmds:
+      - cd scripts && venv/bin/python ai4bharat_transliterator.py "یہ اردو متن ہے"
+    silent: false
+
+  scripts:setup-indic:
+    desc: Set up Indic-PersoArabic-Script-Converter transliterator dependencies
+    cmds:
+      - chmod +x scripts/install_transliteration_deps.sh
+      - ./scripts/install_transliteration_deps.sh
+    silent: false
+
+  scripts:test-indic:
+    desc: Test the Indic-PersoArabic-Script-Converter transliterator with sample text
+    cmds:
+      - cd scripts && source transliteration_env/bin/activate && python3 indic_converter_transliterator.py "یہ اردو متن ہے"
+    silent: false
+
+  scripts:transliterate-indic:
+    desc: Transliterate Urdu text using Indic-PersoArabic-Script-Converter
+    cmds:
+      - cd scripts && source transliteration_env/bin/activate && python3 indic_converter_transliterator.py "{{.CLI_ARGS}}"
+    silent: false
+
+  scripts:quick-test-indic:
+    desc: Run quick test suite for Indic converter with multiple test cases
+    cmds:
+      - cd scripts && python3 quick_test.py
+    silent: false
+
+  scripts:check-indic:
+    desc: Check if Indic converter is properly installed and configured
+    cmds:
+      - cd scripts && source transliteration_env/bin/activate && python3 -c "from IndicPersoArabicConverter import transliterate; print('✅ Indic-PersoArabic-Script-Converter is installed successfully')"
+    silent: false
+
+
