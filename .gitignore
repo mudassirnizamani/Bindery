@@ -19,6 +19,10 @@ build/
 venv/
 env/
 ENV/
+bin/
+lib/
+lib64/
+pyvenv.cfg
 
 # IDE
 .vscode/

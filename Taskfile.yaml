@@ -7,22 +7,30 @@ dotenv: ['app.env']
 
 tasks:
   # Core Processing Tasks
+  install:
+    desc: Install core dependencies
+    cmds:
+      - rm -rf bin lib lib64 pyvenv.cfg
+      - python3 -m venv .
+      - ./bin/python -m pip install -r requirements.txt
+    silent: false
+
   delete_page:
     desc: Run the delete page script
     cmds:
-      - source ./bin/activate && python src/delete_page.py {{.CLI_ARGS}}
+      - ./bin/python src/delete_page.py {{.CLI_ARGS}}
     silent: false
 
   epub_extractor:
     desc: Run the epub extractor script
     cmds:
-      - source ./bin/activate && python src/epub_extractor.py {{.CLI_ARGS}}
+      - ./bin/python src/epub_extractor.py {{.CLI_ARGS}}
     silent: false
 
   page_cleaner:
     desc: Run the page cleaner script
     cmds:
-      - source ./bin/activate && python src/page_cleaner.py {{.CLI_ARGS}}
+      - ./bin/python src/page_cleaner.py {{.CLI_ARGS}}
     silent: false
 
   # Bookey Scraper Tasks
@@ -35,7 +43,7 @@ tasks:
   scraper:test:
     desc: Run test extraction of first 3 categories
     cmds:
-      - cd bookey_scraper/src && PYTHONPATH=. python systematic_extraction_runner.py --test
+      - cd bookey_scraper/src && PYTHONPATH=. python3 systematic_extraction_runner.py --test
     silent: false
 
   scraper:all:
