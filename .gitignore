@@ -34,6 +34,7 @@ pyvenv.cfg
 # Extracted content
 extracted/
 extracted_google/
+extracted_epub/
 
 # Temporary files
 *.tmp

@@ -50,10 +50,13 @@ class AzureClient:
                 response = self.client.chat.completions.create(
                     model=self.deployment, # In Azure SDK, model often acts as deployment name too, but client is configured with azure_deployment
                     messages=[
-                        {"role": "system", "content": "You are a professional book editor."},
+                        {
+                            "role": "system", 
+                            "content": "You are an expert book editor and proofreader. Your task is to clean up extracted text from a book. Correct OCR errors, fix broken paragraphs, and remove extraneous artifacts (like page numbers or headers) while strictly preserving the author's original words, style, and narrative flow."
+                        },
                         {"role": "user", "content": prompt}
                     ],
-                    temperature=0.1, # Low temperature for consistent cleaning
+                    temperature=1,
                 )
 
                 # Log usage and finish reason
