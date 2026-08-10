@@ -16,6 +16,7 @@ tasks:
     silent: false
 
   delete:
+  delete:
     desc: Run the delete page script
     cmds:
       - ./bin/python src/delete_page.py {{.CLI_ARGS}}
@@ -33,6 +34,7 @@ tasks:
       - ./bin/python src/epub_extractor.py {{.CLI_ARGS}}
     silent: false
 
+  clean:
   clean:
     desc: Run the page cleaner script
     cmds:
