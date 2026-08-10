@@ -15,19 +15,25 @@ tasks:
       - ./bin/python -m pip install -r requirements.txt
     silent: false
 
-  delete_page:
+  delete:
     desc: Run the delete page script
     cmds:
       - ./bin/python src/delete_page.py {{.CLI_ARGS}}
     silent: false
 
-  epub_extractor:
+  copy:
+    desc: Run the copy page script
+    cmds:
+      - ./bin/python src/copy_page.py {{.CLI_ARGS}}
+    silent: false
+
+  epub:
     desc: Run the epub extractor script
     cmds:
       - ./bin/python src/epub_extractor.py {{.CLI_ARGS}}
     silent: false
 
-  page_cleaner:
+  clean:
     desc: Run the page cleaner script
     cmds:
       - ./bin/python src/page_cleaner.py {{.CLI_ARGS}}

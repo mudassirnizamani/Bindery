@@ -13,6 +13,8 @@ import sys
 import argparse
 import json
 import re
+import shutil
+import time
 from pathlib import Path
 
 def get_page_filename(page_num):
@@ -92,6 +94,89 @@ def update_index_file(raw_pages_dir, deleted_page_num):
     except Exception as e:
         print(f"  ❌ Failed to update pages_index.json: {e}")
 
+def save_undo_state(raw_pages_dir, page_num, target_file):
+    raw_pages_path = Path(raw_pages_dir)
+    trash_dir = raw_pages_path / '.trash'
+    trash_dir.mkdir(exist_ok=True)
+
+    timestamp = int(time.time())
+    
+    # move target file to trash (we copy it so we can still unlink the original or just move it)
+    trashed_page = trash_dir / f"page_{page_num:03d}_{timestamp}.txt"
+    shutil.copy2(target_file, trashed_page)
+    
+    index_path = raw_pages_path.parent / 'pages_index.json'
+    trashed_index = None
+    if index_path.exists():
+        trashed_index = trash_dir / f"pages_index_{timestamp}.json"
+        shutil.copy2(index_path, trashed_index)
+        
+    undo_info = {
+        "page_num": page_num,
+        "trashed_page": str(trashed_page.name),
+        "trashed_index": str(trashed_index.name) if trashed_index else None
+    }
+    with open(trash_dir / 'latest_undo.json', 'w') as f:
+        json.dump(undo_info, f)
+
+def undo_delete(raw_pages_dir):
+    raw_pages_path = Path(raw_pages_dir)
+    trash_dir = raw_pages_path / '.trash'
+    undo_file = trash_dir / 'latest_undo.json'
+    
+    if not undo_file.exists():
+        print("Error: No undo information found.")
+        sys.exit(1)
+        
+    with open(undo_file, 'r') as f:
+        undo_info = json.load(f)
+        
+    page_num = undo_info['page_num']
+    trashed_page = trash_dir / undo_info['trashed_page']
+    trashed_index = trash_dir / undo_info['trashed_index'] if undo_info.get('trashed_index') else None
+    
+    if not trashed_page.exists():
+        print("Error: Trashed page file missing. Cannot fully undo.")
+        sys.exit(1)
+        
+    # Find files to move back (shift up by 1)
+    files_to_move = []
+    for entry in raw_pages_path.iterdir():
+        if entry.is_file():
+            match = re.match(r'page_(\d+)\.txt', entry.name)
+            if match:
+                curr_num = int(match.group(1))
+                if curr_num >= page_num:
+                    files_to_move.append(curr_num)
+                    
+    files_to_move.sort(reverse=True) # Important to sort descending
+    
+    print(f"Undoing delete for page {page_num}...")
+    print(f"Renumbering {len(files_to_move)} subsequent pages back...")
+    
+    for curr_num in files_to_move:
+        old_path = raw_pages_path / get_page_filename(curr_num)
+        new_num = curr_num + 1
+        new_path = raw_pages_path / get_page_filename(new_num)
+        try:
+            old_path.rename(new_path)
+        except OSError as e:
+            print(f"Error renaming {old_path.name} to {new_path.name}: {e}")
+            sys.exit(1)
+            
+    # Restore deleted page
+    shutil.copy2(trashed_page, raw_pages_path / get_page_filename(page_num))
+    print(f"  ✓ Restored {get_page_filename(page_num)}.")
+    
+    # Restore index
+    if trashed_index and trashed_index.exists():
+        index_path = raw_pages_path.parent / 'pages_index.json'
+        shutil.copy2(trashed_index, index_path)
+        print("  ✓ Restored pages_index.json.")
+        
+    undo_file.unlink()
+    print("\nUndo completed successfully.")
+
 def delete_page(raw_pages_dir, page_num):
     raw_pages_path = Path(raw_pages_dir)
 
@@ -106,6 +191,9 @@ def delete_page(raw_pages_dir, page_num):
         sys.exit(1)
 
     print(f"Processing delete operation for page {page_num}...")
+
+    # Save state for undo
+    save_undo_state(raw_pages_dir, page_num, target_file)
 
     # 1. Delete the target file
     try:
@@ -156,11 +244,17 @@ def delete_page(raw_pages_dir, page_num):
 def main():
     parser = argparse.ArgumentParser(description="Delete a raw page and renumber subsequent pages.")
     parser.add_argument("raw_pages_dir", help="Path to the raw_pages directory")
-    parser.add_argument("page_number", type=int, help="Number of the page to delete (integer)")
+    parser.add_argument("page_number", type=int, nargs='?', help="Number of the page to delete (integer)")
+    parser.add_argument("--undo", action="store_true", help="Undo the last deletion")
 
     args = parser.parse_args()
 
-    delete_page(args.raw_pages_dir, args.page_number)
+    if args.undo:
+        undo_delete(args.raw_pages_dir)
+    else:
+        if args.page_number is None:
+            parser.error("page_number is required unless --undo is specified.")
+        delete_page(args.raw_pages_dir, args.page_number)
 
 if __name__ == "__main__":
     main()
