@@ -63,9 +63,11 @@ python3 src/delete_page.py extracted_google/book_name/raw_pages 20
 ## 2.5. Automated Page Triage & Chapter Compilation with Jev (Recommended)
 
 Instead of manually reviewing pages one-by-one, use `page_triage.py` to let the **Jev System One model** automatically:
-1. **Delete junk pages** — blank pages, pure publisher book-lists, pure legal notices, download splashes
-2. **Detect chapter/section boundaries** — where each new chapter, part, or major section begins
-3. **Merge pages into chapters** — all pages between boundaries get combined into single chapter files
+1. **Delete junk pages** — blank pages, pure publisher book-lists, pure legal notices, download splashes.
+2. **Detect chapter boundaries** — identifies where each new chapter, part, or major section begins.
+3. **Merge pages into chapters** — if a page is *not* a chapter boundary, it gets merged into the previous page using the `copy_page.py` script.
+
+This happens **synchronously and in reverse order** so that the sequential `page_XXX.txt` filenames are perfectly maintained without index shifts or file corruption. 
 
 > **Important:** Pages with watermarks, banners, or ads in their *header/footer* are **not** deleted. Only pages with **zero** book content are removed.
 
@@ -83,10 +85,10 @@ echo "TYPESAFE_API_KEY=your-key-here" >> .env
 ### Usage
 
 ```bash
-# Auto mode — detects chapters and writes merged chapter files
+# Auto mode — applies all delete and merge (copy) actions to raw_pages/
 python3 src/page_triage.py extracted_google/book_name/raw_pages
 
-# Dry-run — shows the chapter map without writing any files
+# Dry-run — shows what will be merged and deleted without touching files
 python3 src/page_triage.py extracted_google/book_name/raw_pages --dry-run
 
 # Custom confidence threshold (default: 0.85 = 85%)
@@ -94,8 +96,8 @@ python3 src/page_triage.py extracted_google/book_name/raw_pages --threshold 0.90
 ```
 
 **Recommended workflow:**
-1. Run `--dry-run` first to preview the chapter structure.
-2. If the chapter map looks correct, run without `--dry-run` to write files.
+1. Run `--dry-run` first to preview the actions.
+2. If it looks correct, run without `--dry-run` to apply the changes to `raw_pages/`.
 
 ### Example Output
 
@@ -103,36 +105,31 @@ python3 src/page_triage.py extracted_google/book_name/raw_pages --threshold 0.90
 🤖 Jev Page Triage — 351 pages  [AUTO mode (threshold: 85%)]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  🗑  DELETED (4 pages, conf ≥ 85%):
-      page_004.txt          (99% conf)
-      page_096.txt          (90% conf)
+  🗑  TO DELETE (4 pages):
+      page_004.txt          (delete conf 99%)
+      ...
 
-  📖  CHAPTER MAP (18 chapters from 347 pages):
-  ────────────────────────────────────────────────────────
-        1. Introduction
-           └─ 1 page  (page_001.txt)
-        2. I — The People's Movement
-           └─ 2 pages  (page_002.txt–page_003.txt)
-        3. 1 — Prelude to Populism
-           └─ 17 pages  (page_004.txt–page_020.txt)  (38,412 chars)
-        4. 2 — The Alliance Develops a Movement Culture
-           └─ 35 pages  (page_021.txt–page_055.txt)  (79,150 chars)
-        ...
+  📖 CHAPTER BOUNDARIES FOUND (18 chapters):
+      page_001.txt          (chapter start conf 98%)
+      page_004.txt          (chapter start conf 99%)
+      ...
 
-  Summary: 4 deleted, 347 pages → 18 chapters
+  🔗 TO MERGE (329 pages into the above chapters)
 
-  📄 Triage report saved → triage_report.json
+  Summary: 4 deleted, 329 merged into 18 chapters.
+  
+  ⚙️  Applying decisions (synchronously in reverse order to prevent index shifts)...
+    🔗  Merging page_351.txt into previous page...
+    🔗  Merging page_350.txt into previous page...
+    ...
+  ✅ Triage complete.
 ```
 
 **Output:**
 ```
 book_name/
-├── raw_pages/           # Original extraction (untouched)
-├── chapters/            # Merged chapter files (NEW)
-│   ├── 001_Introduction.txt
-│   ├── 002_I_The_Peoples_Movement.txt
-│   ├── 003_1_Prelude_to_Populism.txt
-│   └── ...
+├── raw_pages/           # Contains your new, fully merged chapters (still named page_XXX.txt)
+│   └── .trash/          # Safely holds the original pages that were deleted or merged
 └── triage_report.json   # Full audit trail
 ```
 
@@ -140,13 +137,9 @@ book_name/
 
 Uses an LLM to clean the text. It preserves chapter headings but removes artifacts like "Page 22", watermarks, and URLs.
 
-**Usage:** Point it to the `chapters` directory created by the triage step (or `raw_pages` if you skipped triage).
+**Usage:** Point it to the `raw_pages` directory after the triage step.
 
 ```bash
-# After triage (recommended)
-python3 src/page_cleaner.py extracted_google/book_name/chapters
-
-# Without triage (clean raw pages directly)
 python3 src/page_cleaner.py extracted_google/book_name/raw_pages
 ```
 *   **Output**: `.../book_name/cleaned_pages/page_XXX.txt`
