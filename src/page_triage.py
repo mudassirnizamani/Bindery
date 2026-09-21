@@ -8,11 +8,14 @@ PURPOSE:
   After OCR/EPUB extraction you have hundreds of individual page files.
   This script uses Jev to:
     1. Identify and remove junk pages (blank, pure ads, legal-only, etc.)
-    2. Detect chapter/section boundaries
-    3. If a page is NOT a chapter boundary, it merges it into the previous page.
+    2. Detect chapter/section boundaries AND part boundaries
+    3. Choose the right merge granularity:
+       - If the book would have ≤ 15 chapters → merge at CHAPTER boundaries
+       - If the book would have > 15 chapters AND parts exist → merge at PART boundaries
+    4. Apply merges synchronously in reverse order using copy_page.py / delete_page.py
 
   IMPORTANT: It uses `delete_page.py` and `copy_page.py` internally to apply
-  these changes synchronously in reverse order, so the original filenames 
+  these changes synchronously in reverse order, so the original filenames
   (page_001.txt, etc.) are maintained and the pages_index.json is updated safely.
 
 MODES:
@@ -58,8 +61,9 @@ from copy_page import copy_page
 # ---------------------------------------------------------------------------
 
 DEFAULT_THRESHOLD = 0.85   # Auto-apply decisions at or above this confidence
-MAX_WORKERS       = 8      # Parallel Jev calls
+MAX_WORKERS       = 8      # Parallel Jev calls (read-only analysis, safe)
 STATE_CHAR_LIMIT  = 3000   # Send first N chars of each page to Jev
+PART_MERGE_THRESHOLD = 15  # If chapters > this AND parts exist, merge at part level
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +106,31 @@ JEV_QUESTIONS = {
             "CRITICAL: Only answer YES if the page is explicitly formatted as the start of a new major section or chapter."
         )
     ),
+    "is_part_start": Noul(
+        instructions=(
+            "Does this page BEGIN a new PART of the book? "
+            "This is a HIGHER-LEVEL division than a chapter. "
+            "Answer YES ONLY if the page starts with an explicit Part heading such as: "
+            "(1) 'Part I', 'Part II', 'Part III', 'PART ONE', 'PART TWO', etc. "
+            "(2) 'Part 1', 'Part 2', 'Part 3', etc. "
+            "(3) A Roman numeral standing alone as a major division (e.g. 'I', 'II', 'III') "
+            "that clearly represents a Part, not a chapter number. "
+            "(4) 'Book One', 'Book Two', 'Volume I', 'Volume II', etc. "
+            "(5) The very first page of the book (Introduction, Preface, or the "
+            "first content page) also counts as a Part start. "
+            "Answer NO if: "
+            "- The page starts a new chapter within an existing Part "
+            "(e.g. 'Chapter 1', 'Chapter 2', a numbered heading like '1', '2'). "
+            "- The page is regular body text. "
+            "- The page is a section heading that is NOT a Part-level division "
+            "(e.g. 'Acknowledgments', 'Notes', 'Bibliography', 'Appendix'). "
+            "CRITICAL: Parts are the HIGHEST structural division of a book. "
+            "Most books have only 2-6 Parts. If the page just starts a regular "
+            "chapter, answer NO."
+        )
+    ),
 }
+
 
 class PageTriage:
     def __init__(self, raw_pages_dir: str, threshold: float = DEFAULT_THRESHOLD, dry_run: bool = False):
@@ -147,6 +175,7 @@ class PageTriage:
                 "page_num":         page_num,
                 "should_delete":    0.99,
                 "is_chapter_start": 0.0,
+                "is_part_start":    0.0,
                 "error":            None,
             }
 
@@ -160,6 +189,7 @@ class PageTriage:
                 "page_num":         page_num,
                 "should_delete":    answers["should_delete"].noul,
                 "is_chapter_start": answers["is_chapter_start"].noul,
+                "is_part_start":    answers["is_part_start"].noul,
                 "error":            None,
             }
         except Exception as e:
@@ -168,8 +198,36 @@ class PageTriage:
                 "page_num":         page_num,
                 "should_delete":    0.0,
                 "is_chapter_start": 0.0,
+                "is_part_start":    0.0,
                 "error":            str(e),
             }
+
+    def _choose_merge_strategy(self, results: list[dict]) -> str:
+        """
+        Decide whether to merge at chapter level or part level.
+
+        Returns 'chapter' or 'part'.
+        """
+        # Count non-deleted, non-error pages
+        valid = [r for r in results if not r["error"] and r["should_delete"] < self.threshold]
+
+        # Count how many chapter boundaries exist
+        chapter_starts = [r for r in valid if r["is_chapter_start"] >= self.threshold or r["page_num"] == 1]
+        n_chapters = len(chapter_starts)
+
+        # Count how many part boundaries exist
+        part_starts = [r for r in valid if r["is_part_start"] >= self.threshold or r["page_num"] == 1]
+        n_parts = len(part_starts)
+
+        # Decision logic:
+        # If merging at chapter level would leave > PART_MERGE_THRESHOLD pages
+        # AND parts actually exist (more than just page 1), use part-level merge.
+        has_real_parts = n_parts >= 2  # At least 2 parts (page 1 + at least one "Part II" etc.)
+
+        if n_chapters > PART_MERGE_THRESHOLD and has_real_parts:
+            return "part"
+        else:
+            return "chapter"
 
     def run(self):
         pages = self._get_sorted_pages()
@@ -198,57 +256,90 @@ class PageTriage:
         elapsed = time.time() - start_time
         print(f"   ✓ All {total} pages analysed in {elapsed:.1f}s{' ' * 20}")
 
-        # Organize results
-        deleted_pages = []
-        merged_pages = []
-        kept_starts = []
-        error_pages = []
-
         # Sort ascending for the printed report
         results.sort(key=lambda r: r["page_num"])
-        
+
+        # Choose merge strategy
+        strategy = self._choose_merge_strategy(results)
+
+        # Organize results based on strategy
+        deleted_pages = []
+        merged_pages  = []
+        kept_starts   = []
+        error_pages   = []
+
         for r in results:
             if r["error"]:
                 error_pages.append(r)
                 continue
             if r["should_delete"] >= self.threshold:
                 deleted_pages.append(r)
-            elif r["is_chapter_start"] < self.threshold and r["page_num"] > 1:
-                # Merge into previous page if NOT a chapter start
-                merged_pages.append(r)
-            else:
-                # It IS a chapter start (or it's page 1, which can't be merged backward)
-                kept_starts.append(r)
+                continue
 
-        self._print_report(deleted_pages, merged_pages, kept_starts, error_pages)
+            # Determine if this page is a boundary based on the chosen strategy
+            if strategy == "part":
+                is_boundary = r["is_part_start"] >= self.threshold
+            else:
+                is_boundary = r["is_chapter_start"] >= self.threshold
+
+            # Page 1 is always a boundary (can't be merged backward)
+            if r["page_num"] == 1:
+                is_boundary = True
+
+            if is_boundary:
+                kept_starts.append(r)
+            else:
+                merged_pages.append(r)
+
+        self._print_report(deleted_pages, merged_pages, kept_starts, error_pages, strategy)
 
         if not self.dry_run:
             print("\n  ⚙️  Applying decisions (synchronously in reverse order to prevent index shifts)...")
-            
+
             # CRITICAL: We must iterate in REVERSE order so that when we copy/delete
             # page N, we don't mess up the indices of page N+1, N+2, etc.
             results.sort(key=lambda r: r["page_num"], reverse=True)
-            
+
             for r in results:
                 if r["error"]:
                     continue
                 page_num = r["page_num"]
-                
+
+                # Skip page 1 — it can never be merged or deleted
+                if page_num == 1:
+                    continue
+
                 if r["should_delete"] >= self.threshold:
                     print(f"    🗑  Deleting {r['file']}...")
                     delete_page(str(self.raw_pages_dir), page_num)
-                elif r["is_chapter_start"] < self.threshold and page_num > 1:
-                    print(f"    🔗  Merging {r['file']} into previous page...")
-                    copy_page(str(self.raw_pages_dir), page_num)
-                    
+                else:
+                    # Determine if this page is a boundary
+                    if strategy == "part":
+                        is_boundary = r["is_part_start"] >= self.threshold
+                    else:
+                        is_boundary = r["is_chapter_start"] >= self.threshold
+
+                    if not is_boundary:
+                        print(f"    🔗  Merging {r['file']} into previous page...")
+                        copy_page(str(self.raw_pages_dir), page_num)
+
             print("\n  ✅ Triage complete.")
         else:
             print("\n🔍 DRY-RUN: No files were changed.")
 
-        self._save_report(results, elapsed, total)
+        self._save_report(results, elapsed, total, strategy)
 
-    def _print_report(self, deleted_pages, merged_pages, kept_starts, error_pages):
+    def _print_report(self, deleted_pages, merged_pages, kept_starts, error_pages, strategy):
         print()
+
+        # Strategy banner
+        strategy_label = "PART" if strategy == "part" else "CHAPTER"
+        if strategy == "part":
+            print(f"  📐 Merge strategy: {strategy_label} (>{PART_MERGE_THRESHOLD} chapters detected, parts found → merging at part level)")
+        else:
+            print(f"  📐 Merge strategy: {strategy_label} (≤{PART_MERGE_THRESHOLD} chapters or no parts → merging at chapter level)")
+        print()
+
         if error_pages:
             print(f"  ❌ ERRORS ({len(error_pages)}):")
             for r in error_pages:
@@ -259,31 +350,40 @@ class PageTriage:
             for r in deleted_pages:
                 print(f"      {r['file']:<20}  (delete conf {r['should_delete']:.0%})")
 
-        print(f"\n  📖 CHAPTER BOUNDARIES FOUND ({len(kept_starts)} chapters):")
+        boundary_label = "PART" if strategy == "part" else "CHAPTER"
+        print(f"\n  📖 {boundary_label} BOUNDARIES FOUND ({len(kept_starts)}):")
         for r in kept_starts:
-            print(f"      {r['file']:<20}  (chapter start conf {r['is_chapter_start']:.0%})")
+            conf_key = "is_part_start" if strategy == "part" else "is_chapter_start"
+            conf_val = r.get(conf_key, 0)
+            extra = ""
+            # For part strategy, also show chapter info for context
+            if strategy == "part" and r["is_chapter_start"] >= self.threshold:
+                extra = f"  (also chapter start {r['is_chapter_start']:.0%})"
+            print(f"      {r['file']:<20}  ({boundary_label.lower()} start conf {conf_val:.0%}){extra}")
 
-        print(f"\n  🔗 TO MERGE ({len(merged_pages)} pages into the above chapters)")
-        
-        print(f"\n  Summary: {len(deleted_pages)} deleted, {len(merged_pages)} merged into {len(kept_starts)} chapters.")
+        print(f"\n  🔗 TO MERGE ({len(merged_pages)} pages into the above {boundary_label.lower()}s)")
 
-    def _save_report(self, results, elapsed, total):
+        print(f"\n  Summary: {len(deleted_pages)} deleted, {len(merged_pages)} merged into {len(kept_starts)} {boundary_label.lower()}s.")
+
+    def _save_report(self, results, elapsed, total, strategy):
         book_dir = self.raw_pages_dir.parent
         report_path = book_dir / "triage_report.json"
-        
+
         report = {
-            "raw_pages_dir":   str(self.raw_pages_dir),
-            "total_pages":     total,
-            "threshold":       self.threshold,
-            "dry_run":         self.dry_run,
-            "elapsed_seconds": round(elapsed, 2),
-            "all_results":     results,
+            "raw_pages_dir":    str(self.raw_pages_dir),
+            "total_pages":      total,
+            "threshold":        self.threshold,
+            "dry_run":          self.dry_run,
+            "merge_strategy":   strategy,
+            "elapsed_seconds":  round(elapsed, 2),
+            "all_results":      results,
         }
         try:
             with open(report_path, 'w', encoding='utf-8') as f:
                 json.dump(report, f, indent=2, ensure_ascii=False)
         except Exception:
             pass
+
 
 def main():
     parser = argparse.ArgumentParser(description="Automated page triage using Jev.")
